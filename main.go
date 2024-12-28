@@ -23,16 +23,17 @@ func main() {
 		model := models.Data[0].ID
 	*/
 
-	chatCompletion, err := client.Completions.New(context.TODO(), openai.CompletionNewParams{
+	stream := client.Completions.NewStreaming(context.TODO(), openai.CompletionNewParams{
 		Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
-		Model:       openai.F(openai.CompletionNewParamsModel("Qwen/Qwen2.5-7B-Instruct")),
+		Model:       openai.F(openai.CompletionNewParamsModel("model/")),
 		MaxTokens:   openai.F(int64(512)),
 		Temperature: openai.F(1.000000),
 	})
-	if err != nil {
-		fmt.Printf("Error creating completion: %v\n", err)
-		return
-	}
 
-	fmt.Println(chatCompletion.Choices[0].Text)
+	for stream.Next() {
+		evt := stream.Current()
+		if len(evt.Choices) > 0 {
+			fmt.Println(evt.Choices[0].Text)
+		}
+	}
 }
