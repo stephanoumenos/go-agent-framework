@@ -1,4 +1,4 @@
-package StreamNode
+package streamnode
 
 import (
 	"context"
@@ -16,13 +16,13 @@ type StreamNode struct {
 	stream             *ssestream.Stream[openai.Completion]
 }
 
-func NewStreamNode(stream *ssestream.Stream[openai.Completion]) *StreamNode {
+func NewStreamNode(params openai.CompletionNewParams) *StreamNode {
 	return &StreamNode{
 		started:         false,
+		params:          params,
 		completed:       false,
 		generatedTokens: 0,
 		response:        &strings.Builder{},
-		stream:          stream,
 	}
 }
 
