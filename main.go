@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	openai "github.com/openai/openai-go"
+	"github.com/openai/openai-go"
 	option "github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
 )
