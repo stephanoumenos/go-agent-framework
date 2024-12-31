@@ -2,16 +2,19 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"go-cot/streamnode"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/openai/openai-go"
 	option "github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
 )
 
 func main() {
+	ctx := context.Background()
+	client := openai.NewClient(
+		option.WithBaseURL("http://localhost:8000/v1/chat"),
+	)
+
 	req := openai.CompletionNewParams{
 		Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
 		Model:       openai.F(openai.CompletionNewParamsModel("model/")),
@@ -19,17 +22,9 @@ func main() {
 		Temperature: openai.F(1.000000),
 	}
 
-	node := streamnode.NewStreamNode(req)
+	node := streamnode.NewStreamNode(client, req)
 
-	client := openai.NewClient(
-		option.WithBaseURL("http://localhost:8000/v1/chat"),
-	)
-	ctx := context.Background()
-
-	node.Start(ctx, client)
-	for node.Next() {
-		fmt.Println(node.Token())
-	}
+	resp, err := node.Get(ctx)
 
 	/*
 		models, err := client.Models.List(context.Background())

@@ -3,6 +3,7 @@ package streamnode
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
@@ -10,31 +11,41 @@ import (
 
 type StreamNode struct {
 	started, completed bool
+	client             *openai.Client
 	params             openai.CompletionNewParams
 	generatedTokens    int
 	response           *strings.Builder
 	stream             *ssestream.Stream[openai.Completion]
+	once               *sync.Once
+	err                error
 }
 
-func NewStreamNode(params openai.CompletionNewParams) *StreamNode {
+type StreamNodeResult struct {
+	params openai.CompletionNewParams
+	result string
+}
+
+func NewStreamNode(client *openai.Client, params openai.CompletionNewParams) *StreamNode {
 	return &StreamNode{
 		started:         false,
-		params:          params,
 		completed:       false,
+		client:          client,
+		params:          params,
 		generatedTokens: 0,
 		response:        &strings.Builder{},
+		once:            &sync.Once{},
 	}
 }
 
-func (n *StreamNode) Start(ctx context.Context, client *openai.Client) {
+func (n *StreamNode) start(ctx context.Context) {
 	if n.started {
 		return
 	}
-	n.stream = client.Completions.NewStreaming(ctx, n.params)
+	n.stream = n.client.Completions.NewStreaming(ctx, n.params)
 	n.started = true
 }
 
-func (n *StreamNode) Next() bool {
+func (n *StreamNode) next() bool {
 	if !n.stream.Next() {
 		n.completed = true
 		return false
@@ -42,7 +53,7 @@ func (n *StreamNode) Next() bool {
 	return true
 }
 
-func (n *StreamNode) Token() (token string) {
+func (n *StreamNode) token() (token string) {
 	evt := n.stream.Current()
 	if len(evt.Choices) > 0 {
 		n.generatedTokens++
@@ -50,4 +61,22 @@ func (n *StreamNode) Token() (token string) {
 		return evt.Choices[0].Text
 	}
 	return ""
+}
+
+func (n *StreamNode) Get(ctx context.Context) (*StreamNodeResult, error) {
+	n.once.Do(func() {
+		n.start(ctx)
+		for n.next() {
+			n.response.WriteString(n.token())
+		}
+		n.err = n.stream.Err()
+	})
+
+	if n.err != nil {
+		return nil, n.err
+	}
+	return &StreamNodeResult{
+		params: n.params,
+		result: n.response.String(),
+	}, nil
 }
