@@ -19,16 +19,26 @@ func newDryRunContextValue() *dryRunContextValue {
 	return &dryRunContextValue{}
 }
 
-type Definer[Req, Resp any] interface {
+type NodeDefiner[Req, Resp any] interface {
 	// Define ...
 	Define(LLMContext, Req) Node[Resp]
+	Marshal(Req) ([]byte, error)
+	Unmarshal([]byte) (*Req, error)
 }
 
+// Node is a scheduled node in the graph.
+// Call Get to get the result of the node.
 type Node[Resp any] interface {
 	Get(LLMContext) (Resp, error)
+	Marshal(Resp) ([]byte, error)
+	Unmarshal([]byte) (*Resp, error)
 }
 
 type LLMContext context.Context
+
+func Define[Req, Resp any](ctx LLMContext, definer NodeDefiner[Req, Resp], req Req) Node[Resp] {
+	return definer.Define(ctx, req)
+}
 
 func Supervise(ctx context.Context, run func(LLMContext) error) error {
 	dryRun(ctx, run)

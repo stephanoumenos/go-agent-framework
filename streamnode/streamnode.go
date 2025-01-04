@@ -21,6 +21,12 @@ type StreamNode struct {
 	err                error
 }
 
+type StreamNodeDefinition struct{}
+
+func (s *StreamNodeDefinition) Define(supervisor.LLMContext, openai.CompletionNewParams) *StreamNode {
+	return &StreamNode{}
+}
+
 type StreamNodeResult struct {
 	params openai.CompletionNewParams
 	result string
