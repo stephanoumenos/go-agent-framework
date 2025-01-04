@@ -2,6 +2,7 @@ package streamnode
 
 import (
 	"context"
+	"go-cot/supervisor"
 	"strings"
 	"sync"
 
@@ -25,7 +26,7 @@ type StreamNodeResult struct {
 	result string
 }
 
-func NewStreamNode(client *openai.Client, params openai.CompletionNewParams) *StreamNode {
+func NewStreamNode(ctx context.Context, client *openai.Client, params openai.CompletionNewParams) *StreamNode {
 	return &StreamNode{
 		started:         false,
 		completed:       false,
@@ -41,6 +42,7 @@ func (n *StreamNode) start(ctx context.Context) {
 	if n.started {
 		return
 	}
+	supervisor.RegisterDryRunNode(ctx)
 	n.stream = n.client.Completions.NewStreaming(ctx, n.params)
 	n.started = true
 }

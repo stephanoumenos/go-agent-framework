@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"go-cot/streamnode"
+	"go-cot/supervisor"
 
 	"github.com/openai/openai-go"
 	option "github.com/openai/openai-go/option"
@@ -22,9 +23,13 @@ func main() {
 		Temperature: openai.F(1.000000),
 	}
 
-	node := streamnode.NewStreamNode(client, req)
+	supervisor.Supervise(ctx, func(ctx context.Context) error {
+		question1 := streamnode.NewStreamNode(ctx, client, req)
+		resp, err := question1.Get(ctx)
 
-	resp, err := node.Get(ctx)
+		question2 := streamnode.NewStreamNode(ctx, client, req)
+		resp2, err := question2.Get(ctx)
+	})
 
 	/*
 		models, err := client.Models.List(context.Background())

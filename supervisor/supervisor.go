@@ -19,18 +19,23 @@ func newDryRunContextValue() *dryRunContextValue {
 	return &dryRunContextValue{}
 }
 
-func Supervise(ctx context.Context, run func(context.Context)) error {
+type Definer[Req, Resp any] interface {
+	// Define ...
+	Define(LLMContext, Req) Node[Resp]
+}
+
+type Node[Resp any] interface {
+	Get(LLMContext) (Resp, error)
+}
+
+type LLMContext context.Context
+
+func Supervise(ctx context.Context, run func(LLMContext) error) error {
 	dryRun(ctx, run)
 	return nil
 }
 
-/*
-Idea...
-type NodeDefinition struct{}
-type NodeExecution struct{}
-*/
-
-func dryRun(ctx context.Context, run func(context.Context)) {
+func dryRun(ctx context.Context, run func(LLMContext) error) {
 	ctxValue := newDryRunContextValue()
 	ctx = context.WithValue(ctx, dryRunCtxKey, ctxValue)
 	run(ctx)
@@ -63,6 +68,7 @@ func WithSideEffects(ctx context.Context, fun func()) {
 
 func userCode() {
 	ctx := context.Background()
-	Supervise(ctx, func(ctx context.Context) {
+	Supervise(ctx, func(ctx LLMContext) error {
+		return nil
 	})
 }
