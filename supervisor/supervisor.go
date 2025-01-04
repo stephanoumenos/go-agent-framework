@@ -21,27 +21,86 @@ func newDryRunContextValue() *dryRunContextValue {
 
 type NodeDefiner[Req, Resp any] interface {
 	// Define ...
+	define(LLMContext, Req) Node[Resp]
+	marshal(Req) ([]byte, error)
+	unmarshal([]byte) (*Req, error)
+}
+
+// Node implementations must implement this interface to be used in the supervisor.
+// N.B.: it's unexported to prevent users from implementing it directly.
+type nodeDefiner[Req, Resp any] interface {
 	Define(LLMContext, Req) Node[Resp]
 	Marshal(Req) ([]byte, error)
 	Unmarshal([]byte) (*Req, error)
+}
+
+type nodeDefinition[Req, Resp any] struct {
+	defineFn    func(LLMContext, Req) Node[Resp]
+	marshalFn   func(Req) ([]byte, error)
+	unmarshalFn func([]byte) (*Req, error)
+}
+
+func (n nodeDefinition[Req, Resp]) define(ctx LLMContext, req Req) Node[Resp] {
+	return n.defineFn(ctx, req)
+}
+
+func (n nodeDefinition[Req, Resp]) marshal(req Req) ([]byte, error) {
+	return n.marshalFn(req)
+}
+
+func (n nodeDefinition[Req, Resp]) unmarshal(b []byte) (*Req, error) {
+	return n.unmarshalFn(b)
+}
+
+func DefineNodeDefiner[Req, Resp any](fn func(LLMContext, Req) nodeDefiner[Req, Resp]) func(LLMContext, Req) NodeDefiner[Req, Resp] {
+	return func(ctx LLMContext, req Req) NodeDefiner[Req, Resp] {
+		n := fn(ctx, req)
+		return nodeDefinition[Req, Resp]{
+			defineFn:    n.Define,
+			marshalFn:   n.Marshal,
+			unmarshalFn: n.Unmarshal,
+		}
+	}
 }
 
 // Node is a scheduled node in the graph.
 // Call Get to get the result of the node.
 type Node[Resp any] interface {
 	Get(LLMContext) (Resp, error)
-	Marshal(Resp) ([]byte, error)
-	Unmarshal([]byte) (*Resp, error)
+	marshal(Resp) ([]byte, error)
+	unmarshal([]byte) (*Resp, error)
 }
 
 type LLMContext context.Context
 
-func Define[Req, Resp any](ctx LLMContext, definer NodeDefiner[Req, Resp], req Req) Node[Resp] {
-	return definer.Define(ctx, req)
+func Define[Req, Resp any](ctx LLMContext, definer func(Req) NodeDefiner[Req, Resp]) Node[Resp] {
+	return nil
+	// return definer.define(ctx, req)
 }
 
-func Supervise(ctx context.Context, run func(LLMContext) error) error {
-	dryRun(ctx, run)
+type GraphID string
+
+type graph struct {
+	id  GraphID
+	run func(LLMContext) error
+}
+
+func NewGraph(id GraphID, run func(LLMContext) error) *graph {
+	return &graph{id, run}
+}
+
+func Supervise(ctx context.Context, graphs ...*graph) error {
+	graphIDs := make(map[GraphID]struct{}, len(graphs))
+	for _, graph := range graphs {
+		if _, ok := graphIDs[graph.id]; ok {
+			return fmt.Errorf("duplicate graph id: %s", graph.id)
+		}
+		graphIDs[graph.id] = struct{}{}
+	}
+
+	// TODO: add dry run
+	// dryRun(ctx, run)
+
 	return nil
 }
 
@@ -74,11 +133,4 @@ func WithSideEffects(ctx context.Context, fun func()) {
 		return
 	}
 	fun()
-}
-
-func userCode() {
-	ctx := context.Background()
-	Supervise(ctx, func(ctx LLMContext) error {
-		return nil
-	})
 }

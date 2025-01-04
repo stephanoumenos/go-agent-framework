@@ -27,6 +27,22 @@ func (s *StreamNodeDefinition) Define(supervisor.LLMContext, openai.CompletionNe
 	return &StreamNode{}
 }
 
+func (s *StreamNodeDefinition) Marshal(openai.CompletionNewParams) ([]byte, error) {
+	panic("implement me")
+}
+
+func (s *StreamNodeDefinition) Unmarshal([]byte) (*openai.CompletionNewParams, error) {
+	panic("implement me")
+}
+
+func NewStreamNodeDefinition(ctx supervisor.LLMContext, params openai.CompletionNewParams) StreamNodeDefinition {
+	panic("implement me")
+}
+
+func NewStreamNode2(openai.CompletionNewParams) supervisor.NodeDefiner[openai.CompletionNewParams, string] {
+	return nil
+}
+
 type StreamNodeResult struct {
 	params openai.CompletionNewParams
 	result string

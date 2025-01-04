@@ -23,13 +23,22 @@ func main() {
 		Temperature: openai.F(1.000000),
 	}
 
-	supervisor.Supervise(ctx, func(ctx context.Context) error {
-		question1 := streamnode.NewStreamNode(ctx, client, req)
-		resp, err := question1.Get(ctx)
+	err := supervisor.Supervise(ctx,
+		supervisor.NewGraph("question1", func(ctx supervisor.LLMContext) error {
+			node := supervisor.Define(ctx, streamnode.NewStreamNode2)
+			return nil
+		}),
+	)
 
-		question2 := streamnode.NewStreamNode(ctx, client, req)
-		resp2, err := question2.Get(ctx)
-	})
+	/*
+		supervisor.Supervise(ctx, func(ctx context.Context) error {
+			question1 := streamnode.NewStreamNode(ctx, client, req)
+			resp, err := question1.Get(ctx)
+
+			question2 := streamnode.NewStreamNode(ctx, client, req)
+			resp2, err := question2.Get(ctx)
+		})
+	*/
 
 	/*
 		models, err := client.Models.List(context.Background())
