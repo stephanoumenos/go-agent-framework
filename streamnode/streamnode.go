@@ -2,7 +2,8 @@ package streamnode
 
 import (
 	"context"
-	"go-cot/supervisor"
+	"encoding/json"
+	"go-cot/llm"
 	"strings"
 	"sync"
 
@@ -23,24 +24,32 @@ type StreamNode struct {
 
 type StreamNodeDefinition struct{}
 
-func (s *StreamNodeDefinition) Define(supervisor.LLMContext, openai.CompletionNewParams) *StreamNode {
+var _ llm.NodeDefiner[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
+
+func (s *StreamNodeDefinition) Define(llm.LLMContext, openai.CompletionNewParams) llm.Node[StreamNodeResult] {
 	return &StreamNode{}
 }
 
-func (s *StreamNodeDefinition) Marshal(openai.CompletionNewParams) ([]byte, error) {
+func (s *StreamNodeDefinition) Marshal(req openai.CompletionNewParams) ([]byte, error) {
+	return json.Marshal(req)
+}
+
+func (s *StreamNodeDefinition) Unmarshal(data []byte) (*openai.CompletionNewParams, error) {
+	var req *openai.CompletionNewParams
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+func NewStreamNodeDefinition(ctx llm.LLMContext, params openai.CompletionNewParams) StreamNodeDefinition {
 	panic("implement me")
 }
 
-func (s *StreamNodeDefinition) Unmarshal([]byte) (*openai.CompletionNewParams, error) {
-	panic("implement me")
-}
-
-func NewStreamNodeDefinition(ctx supervisor.LLMContext, params openai.CompletionNewParams) StreamNodeDefinition {
-	panic("implement me")
-}
-
-func NewStreamNode2(openai.CompletionNewParams) supervisor.NodeDefiner[openai.CompletionNewParams, string] {
-	return nil
+func NewStreamNode2(openai.CompletionNewParams) func(llm.LLMContext, openai.CompletionNewParams) llm.NodeDefinition[openai.CompletionNewParams, StreamNodeResult] {
+	return llm.DefineNode(func(req openai.CompletionNewParams) llm.NodeDefiner[openai.CompletionNewParams, StreamNodeResult] {
+		return &StreamNodeDefinition{}
+	})
 }
 
 type StreamNodeResult struct {
@@ -64,7 +73,7 @@ func (n *StreamNode) start(ctx context.Context) {
 	if n.started {
 		return
 	}
-	supervisor.RegisterDryRunNode(ctx)
+	llm.RegisterDryRunNode(ctx)
 	n.stream = n.client.Completions.NewStreaming(ctx, n.params)
 	n.started = true
 }
@@ -87,7 +96,7 @@ func (n *StreamNode) token() (token string) {
 	return ""
 }
 
-func (n *StreamNode) Get(ctx context.Context) (*StreamNodeResult, error) {
+func (n *StreamNode) Get(ctx llm.LLMContext) (StreamNodeResult, error) {
 	n.once.Do(func() {
 		n.start(ctx)
 		for n.next() {
@@ -97,10 +106,23 @@ func (n *StreamNode) Get(ctx context.Context) (*StreamNodeResult, error) {
 	})
 
 	if n.err != nil {
-		return nil, n.err
+		return StreamNodeResult{}, n.err
 	}
-	return &StreamNodeResult{
+	return StreamNodeResult{
 		params: n.params,
 		result: n.response.String(),
 	}, nil
+}
+
+func (n *StreamNode) Marshal(resp StreamNodeResult) ([]byte, error) {
+	return json.Marshal(resp)
+}
+
+func (n *StreamNode) Unmarshal(data []byte) (*StreamNodeResult, error) {
+	var resp StreamNodeResult
+	err := json.Unmarshal(data, &resp)
+	if err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }

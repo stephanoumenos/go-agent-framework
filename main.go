@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"go-cot/llm"
 	"go-cot/streamnode"
-	"go-cot/supervisor"
 
 	"github.com/openai/openai-go"
 	option "github.com/openai/openai-go/option"
@@ -23,9 +23,12 @@ func main() {
 		Temperature: openai.F(1.000000),
 	}
 
-	err := supervisor.Supervise(ctx,
-		supervisor.NewGraph("question1", func(ctx supervisor.LLMContext) error {
-			node := supervisor.Define(ctx, streamnode.NewStreamNode2)
+	err := llm.Supervise(ctx,
+		llm.NewGraph("client internet troubleshooting", func(ctx llm.LLMContext) error {
+			node := llm.Define(ctx, streamnode.NewStreamNode2, openai.CompletionNewParams{})
+
+			// same for other questions...
+
 			return nil
 		}),
 	)

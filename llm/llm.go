@@ -1,4 +1,4 @@
-package supervisor
+package llm
 
 import (
 	"context"
@@ -19,47 +19,33 @@ func newDryRunContextValue() *dryRunContextValue {
 	return &dryRunContextValue{}
 }
 
-type NodeDefiner[Req, Resp any] interface {
-	// Define ...
-	define(LLMContext, Req) Node[Resp]
-	marshal(Req) ([]byte, error)
-	unmarshal([]byte) (*Req, error)
-}
-
 // Node implementations must implement this interface to be used in the supervisor.
 // N.B.: it's unexported to prevent users from implementing it directly.
-type nodeDefiner[Req, Resp any] interface {
+type NodeDefiner[Req, Resp any] interface {
 	Define(LLMContext, Req) Node[Resp]
 	Marshal(Req) ([]byte, error)
 	Unmarshal([]byte) (*Req, error)
 }
 
-type nodeDefinition[Req, Resp any] struct {
-	defineFn    func(LLMContext, Req) Node[Resp]
-	marshalFn   func(Req) ([]byte, error)
-	unmarshalFn func([]byte) (*Req, error)
+type NodeDefinition[Req, Resp any] struct {
+	node NodeDefiner[Req, Resp]
 }
 
-func (n nodeDefinition[Req, Resp]) define(ctx LLMContext, req Req) Node[Resp] {
-	return n.defineFn(ctx, req)
+func (n NodeDefinition[Req, Resp]) define(ctx LLMContext, req Req) Node[Resp] {
+	return n.node.Define(ctx, req)
 }
 
-func (n nodeDefinition[Req, Resp]) marshal(req Req) ([]byte, error) {
-	return n.marshalFn(req)
+func (n NodeDefinition[Req, Resp]) marshal(req Req) ([]byte, error) {
+	return n.node.Marshal(req)
 }
 
-func (n nodeDefinition[Req, Resp]) unmarshal(b []byte) (*Req, error) {
-	return n.unmarshalFn(b)
+func (n NodeDefinition[Req, Resp]) unmarshal(b []byte) (*Req, error) {
+	return n.node.Unmarshal(b)
 }
 
-func DefineNodeDefiner[Req, Resp any](fn func(LLMContext, Req) nodeDefiner[Req, Resp]) func(LLMContext, Req) NodeDefiner[Req, Resp] {
-	return func(ctx LLMContext, req Req) NodeDefiner[Req, Resp] {
-		n := fn(ctx, req)
-		return nodeDefinition[Req, Resp]{
-			defineFn:    n.Define,
-			marshalFn:   n.Marshal,
-			unmarshalFn: n.Unmarshal,
-		}
+func DefineNode[Req, Resp any](fn func(Req) NodeDefiner[Req, Resp]) func(LLMContext, Req) NodeDefinition[Req, Resp] {
+	return func(ctx LLMContext, req Req) NodeDefinition[Req, Resp] {
+		return NodeDefinition[Req, Resp]{fn(req)}
 	}
 }
 
@@ -67,13 +53,15 @@ func DefineNodeDefiner[Req, Resp any](fn func(LLMContext, Req) nodeDefiner[Req, 
 // Call Get to get the result of the node.
 type Node[Resp any] interface {
 	Get(LLMContext) (Resp, error)
-	marshal(Resp) ([]byte, error)
-	unmarshal([]byte) (*Resp, error)
+	Marshal(Resp) ([]byte, error)
+	Unmarshal([]byte) (*Resp, error)
 }
 
 type LLMContext context.Context
 
-func Define[Req, Resp any](ctx LLMContext, definer func(Req) NodeDefiner[Req, Resp]) Node[Resp] {
+type NodeDefinerFn[Req, Resp any] func(Req) func(LLMContext, Req) NodeDefinition[Req, Resp]
+
+func Define[Req, Resp any](ctx LLMContext, definer NodeDefinerFn[Req, Resp], req Req) Node[Resp] {
 	return nil
 	// return definer.define(ctx, req)
 }
