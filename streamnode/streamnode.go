@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"go-cot/llm"
+	"go-cot/llm/node"
 	"strings"
 	"sync"
 
@@ -24,9 +25,9 @@ type StreamNode struct {
 
 type StreamNodeDefinition struct{}
 
-var _ llm.NodeDefiner[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
+var _ node.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
 
-func (s *StreamNodeDefinition) Define(llm.Context, openai.CompletionNewParams) llm.Node[StreamNodeResult] {
+func (s *StreamNodeDefinition) Define(llm.Context, openai.CompletionNewParams) node.Node[StreamNodeResult] {
 	return &StreamNode{}
 }
 
@@ -46,15 +47,15 @@ func NewStreamNodeDefinition(ctx llm.Context, params openai.CompletionNewParams)
 	panic("implement me")
 }
 
-func NewStreamNode2(openai.CompletionNewParams) llm.CustomNodeDefinerFn[openai.CompletionNewParams, StreamNodeResult] {
-	return llm.DefineNode(func(req openai.CompletionNewParams) llm.NodeDefiner[openai.CompletionNewParams, StreamNodeResult] {
+func NewStreamNode2(openai.CompletionNewParams) node.TypeDefinition[openai.CompletionNewParams, StreamNodeResult] {
+	return node.DefineType(func(req openai.CompletionNewParams) node.Definer[openai.CompletionNewParams, StreamNodeResult] {
 		return &StreamNodeDefinition{}
 	})
 }
 
-var streamNodeType llm.NodeType[openai.CompletionNewParams, StreamNodeResult] = NewStreamNode2
+var streamNodeType node.Type[openai.CompletionNewParams, StreamNodeResult] = NewStreamNode2
 
-func Type() llm.NodeType[openai.CompletionNewParams, StreamNodeResult] {
+func Type() node.Type[openai.CompletionNewParams, StreamNodeResult] {
 	return streamNodeType
 }
 

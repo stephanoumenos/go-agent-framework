@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"go-cot/llm"
+	"go-cot/llm/node"
 	"go-cot/streamnode"
 
 	"github.com/openai/openai-go"
@@ -18,7 +19,7 @@ func main() {
 
 	err := llm.Supervise(ctx,
 		llm.NewGraph("client internet troubleshooting", func(ctx llm.Context) error {
-			node := llm.Define(ctx, streamnode.Type(), openai.CompletionNewParams{
+			node := node.New(ctx, streamnode.Type(), openai.CompletionNewParams{
 				Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
 				Model:       openai.F(openai.CompletionNewParamsModel("model/")),
 				MaxTokens:   openai.F(int64(512)),
