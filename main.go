@@ -16,16 +16,14 @@ func main() {
 		option.WithBaseURL("http://localhost:8000/v1/chat"),
 	)
 
-	req := openai.CompletionNewParams{
-		Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
-		Model:       openai.F(openai.CompletionNewParamsModel("model/")),
-		MaxTokens:   openai.F(int64(512)),
-		Temperature: openai.F(1.000000),
-	}
-
 	err := llm.Supervise(ctx,
-		llm.NewGraph("client internet troubleshooting", func(ctx llm.LLMContext) error {
-			node := llm.Define(ctx, streamnode.NewStreamNode2, openai.CompletionNewParams{})
+		llm.NewGraph("client internet troubleshooting", func(ctx llm.Context) error {
+			node := llm.Define(ctx, streamnode.Type(), openai.CompletionNewParams{
+				Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
+				Model:       openai.F(openai.CompletionNewParamsModel("model/")),
+				MaxTokens:   openai.F(int64(512)),
+				Temperature: openai.F(1.000000),
+			})
 
 			// same for other questions...
 

@@ -22,7 +22,7 @@ func newDryRunContextValue() *dryRunContextValue {
 // Node implementations must implement this interface to be used in the supervisor.
 // N.B.: it's unexported to prevent users from implementing it directly.
 type NodeDefiner[Req, Resp any] interface {
-	Define(LLMContext, Req) Node[Resp]
+	Define(Context, Req) Node[Resp]
 	Marshal(Req) ([]byte, error)
 	Unmarshal([]byte) (*Req, error)
 }
@@ -31,7 +31,7 @@ type NodeDefinition[Req, Resp any] struct {
 	node NodeDefiner[Req, Resp]
 }
 
-func (n NodeDefinition[Req, Resp]) define(ctx LLMContext, req Req) Node[Resp] {
+func (n NodeDefinition[Req, Resp]) define(ctx Context, req Req) Node[Resp] {
 	return n.node.Define(ctx, req)
 }
 
@@ -43,8 +43,8 @@ func (n NodeDefinition[Req, Resp]) unmarshal(b []byte) (*Req, error) {
 	return n.node.Unmarshal(b)
 }
 
-func DefineNode[Req, Resp any](fn func(Req) NodeDefiner[Req, Resp]) func(LLMContext, Req) NodeDefinition[Req, Resp] {
-	return func(ctx LLMContext, req Req) NodeDefinition[Req, Resp] {
+func DefineNode[Req, Resp any](fn func(Req) NodeDefiner[Req, Resp]) CustomNodeDefinerFn[Req, Resp] {
+	return func(_ Context, req Req) NodeDefinition[Req, Resp] {
 		return NodeDefinition[Req, Resp]{fn(req)}
 	}
 }
@@ -52,16 +52,21 @@ func DefineNode[Req, Resp any](fn func(Req) NodeDefiner[Req, Resp]) func(LLMCont
 // Node is a scheduled node in the graph.
 // Call Get to get the result of the node.
 type Node[Resp any] interface {
-	Get(LLMContext) (Resp, error)
+	Get(Context) (Resp, error)
 	Marshal(Resp) ([]byte, error)
 	Unmarshal([]byte) (*Resp, error)
 }
 
-type LLMContext context.Context
+// Context serves two purposes:
+// 1. Prevent users from calling functions outside llm.Suppervise.
+// 2. Lets us store variables with the state of the graph.
+type Context context.Context
 
-type NodeDefinerFn[Req, Resp any] func(Req) func(LLMContext, Req) NodeDefinition[Req, Resp]
+type CustomNodeDefinerFn[Req, Resp any] func(Context, Req) NodeDefinition[Req, Resp]
 
-func Define[Req, Resp any](ctx LLMContext, definer NodeDefinerFn[Req, Resp], req Req) Node[Resp] {
+type NodeType[Req, Resp any] func(Req) CustomNodeDefinerFn[Req, Resp]
+
+func Define[Req, Resp any](ctx Context, nodeType NodeType[Req, Resp], req Req) Node[Resp] {
 	return nil
 	// return definer.define(ctx, req)
 }
@@ -70,10 +75,10 @@ type GraphID string
 
 type graph struct {
 	id  GraphID
-	run func(LLMContext) error
+	run func(Context) error
 }
 
-func NewGraph(id GraphID, run func(LLMContext) error) *graph {
+func NewGraph(id GraphID, run func(Context) error) *graph {
 	return &graph{id, run}
 }
 
@@ -92,7 +97,7 @@ func Supervise(ctx context.Context, graphs ...*graph) error {
 	return nil
 }
 
-func dryRun(ctx context.Context, run func(LLMContext) error) {
+func dryRun(ctx context.Context, run func(Context) error) {
 	ctxValue := newDryRunContextValue()
 	ctx = context.WithValue(ctx, dryRunCtxKey, ctxValue)
 	run(ctx)
