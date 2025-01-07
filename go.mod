@@ -1,4 +1,4 @@
-module go-cot
+module golem
 
 go 1.23.4
 

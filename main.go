@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"go-cot/llm"
-	"go-cot/llm/node"
-	"go-cot/streamnode"
+	"golem/golem"
+	"golem/golem/node"
+	"golem/streamnode"
 
 	"github.com/openai/openai-go"
 	option "github.com/openai/openai-go/option"
@@ -17,37 +17,23 @@ func main() {
 		option.WithBaseURL("http://localhost:8000/v1/chat"),
 	)
 
-	err := llm.Supervise(ctx,
-		llm.NewGraph("client internet troubleshooting", func(ctx llm.Context) error {
-			node := node.New(ctx, streamnode.Type(), openai.CompletionNewParams{
+	golem.HandleFunc("client-internet-troubleshooting", func(ctx golem.Context) error {
+		veganNode := node.New(ctx, streamnode.Type(), openai.CompletionNewParams{
+			Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
+			Model:       openai.F(openai.CompletionNewParamsModel("model/")),
+			MaxTokens:   openai.F(int64(512)),
+			Temperature: openai.F(1.000000),
+		})
+
+		nodeDynamic := node.NewDynamic(ctx, streamnode.Type(), func(node.Context) (openai.CompletionNewParams, error) {
+			return openai.CompletionNewParams{
 				Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
 				Model:       openai.F(openai.CompletionNewParamsModel("model/")),
 				MaxTokens:   openai.F(int64(512)),
 				Temperature: openai.F(1.000000),
-			})
-
-			// same for other questions...
-
-			return nil
-		}),
-	)
-
-	/*
-		supervisor.Supervise(ctx, func(ctx context.Context) error {
-			question1 := streamnode.NewStreamNode(ctx, client, req)
-			resp, err := question1.Get(ctx)
-
-			question2 := streamnode.NewStreamNode(ctx, client, req)
-			resp2, err := question2.Get(ctx)
+			}, nil
 		})
-	*/
 
-	/*
-		models, err := client.Models.List(context.Background())
-		if err != nil {
-			fmt.Printf("Error listing models: %v\n", err)
-			return
-		}
-		model := models.Data[0].ID
-	*/
+		return nil
+	})
 }

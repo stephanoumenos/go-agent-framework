@@ -1,10 +1,29 @@
-package llm
+package golem
 
 import (
 	"context"
-	"fmt"
+	"sync"
 )
 
+// Context serves two purposes:
+// 1. Prevent users from calling functions outside llm.Suppervise.
+// 2. Lets us store variables with the state of the graph.
+type Context context.Context
+
+type HandlerFunc func(Context) error
+
+var (
+	mu       sync.RWMutex
+	handlers = make(map[string]HandlerFunc)
+)
+
+func HandleFunc(route string, handler HandlerFunc) {
+	mu.Lock()
+	handlers[route] = handler
+	mu.Unlock()
+}
+
+/*
 type dryRunContextKey struct{}
 
 var dryRunCtxKey = &dryRunContextKey{}
@@ -17,37 +36,6 @@ type dryRunContextValue struct {
 
 func newDryRunContextValue() *dryRunContextValue {
 	return &dryRunContextValue{}
-}
-
-// Context serves two purposes:
-// 1. Prevent users from calling functions outside llm.Suppervise.
-// 2. Lets us store variables with the state of the graph.
-type Context context.Context
-
-type GraphID string
-
-type graph struct {
-	id  GraphID
-	run func(Context) error
-}
-
-func NewGraph(id GraphID, run func(Context) error) *graph {
-	return &graph{id, run}
-}
-
-func Supervise(ctx context.Context, graphs ...*graph) error {
-	graphIDs := make(map[GraphID]struct{}, len(graphs))
-	for _, graph := range graphs {
-		if _, ok := graphIDs[graph.id]; ok {
-			return fmt.Errorf("duplicate graph id: %s", graph.id)
-		}
-		graphIDs[graph.id] = struct{}{}
-	}
-
-	// TODO: add dry run
-	// dryRun(ctx, run)
-
-	return nil
 }
 
 func dryRun(ctx context.Context, run func(Context) error) {
@@ -80,3 +68,5 @@ func WithSideEffects(ctx context.Context, fun func()) {
 	}
 	fun()
 }
+
+*/

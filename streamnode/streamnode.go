@@ -3,14 +3,16 @@ package streamnode
 import (
 	"context"
 	"encoding/json"
-	"go-cot/llm"
-	"go-cot/llm/node"
+	"golem/golem"
+	"golem/golem/node"
 	"strings"
 	"sync"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
 )
+
+var _ node.Execution[StreamNodeResult] = (*StreamNode)(nil)
 
 type StreamNode struct {
 	started, completed bool
@@ -27,7 +29,7 @@ type StreamNodeDefinition struct{}
 
 var _ node.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
 
-func (s *StreamNodeDefinition) Define(llm.Context, openai.CompletionNewParams) node.Node[StreamNodeResult] {
+func (s *StreamNodeDefinition) Define(golem.Context, openai.CompletionNewParams) node.Execution[StreamNodeResult] {
 	return &StreamNode{}
 }
 
@@ -43,7 +45,7 @@ func (s *StreamNodeDefinition) Unmarshal(data []byte) (*openai.CompletionNewPara
 	return req, nil
 }
 
-func NewStreamNodeDefinition(ctx llm.Context, params openai.CompletionNewParams) StreamNodeDefinition {
+func NewStreamNodeDefinition(ctx golem.Context, params openai.CompletionNewParams) StreamNodeDefinition {
 	panic("implement me")
 }
 
@@ -80,7 +82,7 @@ func (n *StreamNode) start(ctx context.Context) {
 	if n.started {
 		return
 	}
-	llm.RegisterDryRunNode(ctx)
+	// golem.RegisterDryRunNode(ctx)
 	n.stream = n.client.Completions.NewStreaming(ctx, n.params)
 	n.started = true
 }
@@ -103,7 +105,7 @@ func (n *StreamNode) token() (token string) {
 	return ""
 }
 
-func (n *StreamNode) Get(ctx llm.Context) (StreamNodeResult, error) {
+func (n *StreamNode) Get(ctx golem.Context) (StreamNodeResult, error) {
 	n.once.Do(func() {
 		n.start(ctx)
 		for n.next() {
