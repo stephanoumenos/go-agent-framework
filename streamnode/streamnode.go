@@ -12,7 +12,10 @@ import (
 	"github.com/openai/openai-go/packages/ssestream"
 )
 
-var _ node.Execution[StreamNodeResult] = (*StreamNode)(nil)
+var (
+	_ node.Execution[StreamNodeResult]   = (*StreamNode)(nil)
+	_ node.Persistable[StreamNodeResult] = (*StreamNode)(nil)
+)
 
 type StreamNode struct {
 	started, completed bool
@@ -29,7 +32,7 @@ type StreamNodeDefinition struct{}
 
 var _ node.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
 
-func (s *StreamNodeDefinition) Define(golem.Context, openai.CompletionNewParams) node.Execution[StreamNodeResult] {
+func (s *StreamNodeDefinition) Define(golem.WorkflowContext, openai.CompletionNewParams) node.Execution[StreamNodeResult] {
 	return &StreamNode{}
 }
 
@@ -45,7 +48,7 @@ func (s *StreamNodeDefinition) Unmarshal(data []byte) (*openai.CompletionNewPara
 	return req, nil
 }
 
-func NewStreamNodeDefinition(ctx golem.Context, params openai.CompletionNewParams) StreamNodeDefinition {
+func NewStreamNodeDefinition(ctx golem.WorkflowContext, params openai.CompletionNewParams) StreamNodeDefinition {
 	panic("implement me")
 }
 
@@ -105,7 +108,7 @@ func (n *StreamNode) token() (token string) {
 	return ""
 }
 
-func (n *StreamNode) Get(ctx golem.Context) (StreamNodeResult, error) {
+func (n *StreamNode) Get(ctx node.Context) (StreamNodeResult, error) {
 	n.once.Do(func() {
 		n.start(ctx)
 		for n.next() {

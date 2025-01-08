@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"golem/golem"
-	"golem/golem/node"
+	"golem/nodetypes"
 	"golem/streamnode"
+	"io"
 
 	"github.com/openai/openai-go"
 	option "github.com/openai/openai-go/option"
@@ -17,15 +19,25 @@ func main() {
 		option.WithBaseURL("http://localhost:8000/v1/chat"),
 	)
 
-	golem.HandleFunc("client-internet-troubleshooting", func(ctx golem.Context) error {
-		veganNode := node.New(ctx, streamnode.Type(), openai.CompletionNewParams{
+	reqMapper := nodetypes.NewJSONDecoderFromFunc(func(req io.ReadCloser) (openai.CompletionNewParams, error) {
+		var mappedReq openai.CompletionNewParams
+		if err := json.NewDecoder(req).Decode(&mappedReq); err != nil {
+			return mappedReq, err
+		}
+		return mappedReq, nil
+	})
+
+	golem.HandleFunc("client-internet-troubleshooting", reqMapper, func(ctx golem.WorkflowContext) error {
+		veganNode := golem.NewNode(ctx, streamnode.Type(), openai.CompletionNewParams{
 			Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
 			Model:       openai.F(openai.CompletionNewParamsModel("model/")),
 			MaxTokens:   openai.F(int64(512)),
 			Temperature: openai.F(1.000000),
 		})
 
-		nodeDynamic := node.NewDynamic(ctx, streamnode.Type(), func(node.Context) (openai.CompletionNewParams, error) {
+		nodeDynamic := golem.NewAgenticNode(ctx, streamnode.Type(), func(ctx golem.NodeContext) (openai.CompletionNewParams, error) {
+			result, err := veganNode.Get(ctx)
+
 			return openai.CompletionNewParams{
 				Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
 				Model:       openai.F(openai.CompletionNewParamsModel("model/")),

@@ -1,26 +1,94 @@
 package golem
 
 import (
-	"context"
+	"io"
 	"sync"
 )
 
-// Context serves two purposes:
+// WorkflowContext serves two purposes:
 // 1. Prevent users from calling functions outside llm.Suppervise.
 // 2. Lets us store variables with the state of the graph.
-type Context context.Context
+type WorkflowContext struct {
+}
 
-type HandlerFunc func(Context) error
+type HandlerFunc[Req any] func(WorkflowContext, Req) error
 
 var (
 	mu       sync.RWMutex
-	handlers = make(map[string]HandlerFunc)
+	handlers = make(map[string]any)
 )
 
-func HandleFunc(route string, handler HandlerFunc) {
+func HandleFunc[Req any](route string, startNodeType Type[io.ReadCloser, Req], handler HandlerFunc[Req]) {
 	mu.Lock()
 	handlers[route] = handler
 	mu.Unlock()
+}
+
+func NewNode[Req, Resp any](ctx WorkflowContext, _type Type[Req, Resp], req Req) Execution[Resp] {
+	return nil
+	// return definer.define(ctx, req)
+}
+
+type NodeContext struct {
+}
+
+func NewAgenticNode[Req, Resp any](ctx WorkflowContext, _type Type[Req, Resp], fun func(WorkflowContext) (Req, error)) Execution[Resp] {
+	return nil
+}
+
+/*
+func Start[Req any](ctx Context, _type Type[[]byte, Req], fun func(Req) (Resp, error)) Execution[Resp] {
+	return nil
+}
+*/
+
+type TypeDefinition[Req, Resp any] func(WorkflowContext, Req) Definition[Req, Resp]
+
+type Type[Req, Resp any] func(Req) TypeDefinition[Req, Resp]
+
+// Node implementations must implement this interface to be used in the supervisor.
+// N.B.: it's unexported to prevent users from implementing it directly.
+type Definer[Req, Resp any] interface {
+	Define(WorkflowContext, Req) Execution[Resp]
+}
+
+type Definition[Req, Resp any] struct {
+	node Definer[Req, Resp]
+}
+
+func (n Definition[Req, Resp]) define(ctx WorkflowContext, req Req) Execution[Resp] {
+	return n.node.Define(ctx, req)
+}
+
+/*
+func (n Definition[Req, Resp]) marshal(req Req) ([]byte, error) {
+	return n.node.Marshal(req)
+}
+
+func (n Definition[Req, Resp]) unmarshal(b []byte) (*Req, error) {
+	return n.node.Unmarshal(b)
+}
+*/
+
+func DefineType[Req, Resp any](fun func(Req) Definer[Req, Resp]) TypeDefinition[Req, Resp] {
+	return func(_ WorkflowContext, req Req) Definition[Req, Resp] {
+		return Definition[Req, Resp]{fun(req)}
+	}
+}
+
+func DefineStartType[Req, Resp any](fun func(Req) Definer[Req, Resp]) Type[Req, Resp] {
+	var a Type[Req, Resp] = DefineType(fun)
+}
+
+// Execution is a scheduled node in the graph.
+// Call Get to get the result of the node.
+type Execution[Resp any] interface {
+	Get(WorkflowContext) (Resp, error)
+}
+
+type Persistable[Resp any] interface {
+	Marshal(Resp) ([]byte, error)
+	Unmarshal([]byte) (*Resp, error)
 }
 
 /*
