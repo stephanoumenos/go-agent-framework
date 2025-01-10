@@ -44,7 +44,11 @@ func Start[Req any](ctx Context, _type Type[[]byte, Req], fun func(Req) (Resp, e
 
 type TypeDefinition[Req, Resp any] func(WorkflowContext, Req) Definition[Req, Resp]
 
+type StartTypeDefinition[Req any] func(WorkflowContext, io.ReadCloser) Definition[io.ReadCloser, Req]
+
 type Type[Req, Resp any] func(Req) TypeDefinition[Req, Resp]
+
+// type StartType[Req any] func(func(io.ReadCloser) (Req, error)) TypeDefinition[io.ReadCloser, Req]
 
 // Node implementations must implement this interface to be used in the supervisor.
 // N.B.: it's unexported to prevent users from implementing it directly.
@@ -76,8 +80,10 @@ func DefineType[Req, Resp any](fun func(Req) Definer[Req, Resp]) TypeDefinition[
 	}
 }
 
-func DefineStartType[Req, Resp any](fun func(Req) Definer[Req, Resp]) Type[Req, Resp] {
-	var a Type[Req, Resp] = DefineType(fun)
+func DefineStartType[Req any](fun func(io.ReadCloser) Definer[io.ReadCloser, Req]) StartTypeDefinition[Req] {
+	return func(_ WorkflowContext, req io.ReadCloser) Definition[io.ReadCloser, Req] {
+		return Definition[io.ReadCloser, Req]{fun(req)}
+	}
 }
 
 // Execution is a scheduled node in the graph.

@@ -27,7 +27,7 @@ func main() {
 		return mappedReq, nil
 	})
 
-	golem.HandleFunc("client-internet-troubleshooting", reqMapper, func(ctx golem.WorkflowContext) error {
+	golem.HandleFunc("client-internet-troubleshooting", reqMapper, func(ctx golem.WorkflowContext, req openai.CompletionNewParams) error {
 		veganNode := golem.NewNode(ctx, streamnode.Type(), openai.CompletionNewParams{
 			Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
 			Model:       openai.F(openai.CompletionNewParamsModel("model/")),

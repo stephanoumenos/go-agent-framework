@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"golem/golem"
-	"golem/golem/node"
 	"strings"
 	"sync"
 
@@ -13,8 +12,8 @@ import (
 )
 
 var (
-	_ node.Execution[StreamNodeResult]   = (*StreamNode)(nil)
-	_ node.Persistable[StreamNodeResult] = (*StreamNode)(nil)
+	_ golem.Execution[StreamNodeResult]   = (*StreamNode)(nil)
+	_ golem.Persistable[StreamNodeResult] = (*StreamNode)(nil)
 )
 
 type StreamNode struct {
@@ -30,7 +29,7 @@ type StreamNode struct {
 
 type StreamNodeDefinition struct{}
 
-var _ node.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
+var _ golem.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
 
 func (s *StreamNodeDefinition) Define(golem.WorkflowContext, openai.CompletionNewParams) node.Execution[StreamNodeResult] {
 	return &StreamNode{}
@@ -52,15 +51,15 @@ func NewStreamNodeDefinition(ctx golem.WorkflowContext, params openai.Completion
 	panic("implement me")
 }
 
-func NewStreamNode2(openai.CompletionNewParams) node.TypeDefinition[openai.CompletionNewParams, StreamNodeResult] {
-	return node.DefineType(func(req openai.CompletionNewParams) node.Definer[openai.CompletionNewParams, StreamNodeResult] {
+func NewStreamNode2(openai.CompletionNewParams) golem.TypeDefinition[openai.CompletionNewParams, StreamNodeResult] {
+	return golem.DefineType(func(req openai.CompletionNewParams) golem.Definer[openai.CompletionNewParams, StreamNodeResult] {
 		return &StreamNodeDefinition{}
 	})
 }
 
-var streamNodeType node.Type[openai.CompletionNewParams, StreamNodeResult] = NewStreamNode2
+var streamNodeType golem.Type[openai.CompletionNewParams, StreamNodeResult] = NewStreamNode2
 
-func Type() node.Type[openai.CompletionNewParams, StreamNodeResult] {
+func Type() golem.Type[openai.CompletionNewParams, StreamNodeResult] {
 	return streamNodeType
 }
 

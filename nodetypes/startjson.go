@@ -5,8 +5,8 @@ import (
 	"io"
 )
 
-type JSONDecoder[Resp any] struct {
-	fun func(io.ReadCloser) (Resp, error)
+type JSONDecoder[Req any] struct {
+	fun func(io.ReadCloser) (Req, error)
 	req io.ReadCloser
 }
 
@@ -14,14 +14,24 @@ func (j *JSONDecoder[Resp]) Get(golem.WorkflowContext) (Resp, error) {
 	return j.fun(j.req)
 }
 
-type JSONDecoderDefinition[Resp any] struct {
-	fun func(io.ReadCloser) (Resp, error)
+type JSONDecoderDefinition[Req any] struct {
+	fun func(io.ReadCloser) (Req, error)
 }
 
-func NewJSONDecoderFromFunc[Resp any](fun func(io.ReadCloser) (Resp, error)) golem.TypeDefinition[io.ReadCloser, Resp] {
-	return golem.DefineType(func(req io.ReadCloser) golem.Definer[io.ReadCloser, Resp] {
-		return &JSONDecoderDefinition[Resp]{fun: fun}
+func NewJSONDecoderFromFunc[Req any](fun func(io.ReadCloser) (Req, error)) golem.TypeDefinition[io.ReadCloser, Req] {
+	return golem.DefineType(func(req io.ReadCloser) golem.Definer[io.ReadCloser, Req] {
+		return &JSONDecoderDefinition[Req]{fun: fun}
 	})
+}
+
+func jsonDecoderNodeType[Req any]() golem.Type[io.ReadCloser, Req] {
+	return NewJSONDecoderFromFunc[Req]
+}
+
+// var jsonDecoderNodeType = golem.Type[io.ReadCloser]
+
+func Type[Req any]() golem.Type[io.ReadCloser, Req] {
+	return NewJSONDecoderFromFunc[Req]
 }
 
 type JSONDecoderDefiner[Resp any] struct{}
