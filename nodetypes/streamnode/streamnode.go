@@ -12,8 +12,7 @@ import (
 )
 
 var (
-	_ golem.Execution[StreamNodeResult]   = (*StreamNode)(nil)
-	_ golem.Persistable[StreamNodeResult] = (*StreamNode)(nil)
+	_ golem.Execution[StreamNodeResult] = (*StreamNode)(nil)
 )
 
 type StreamNode struct {
@@ -31,10 +30,11 @@ type StreamNodeDefinition struct{}
 
 var _ golem.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
 
-func (s *StreamNodeDefinition) Define(golem.WorkflowContext, openai.CompletionNewParams) node.Execution[StreamNodeResult] {
+func (s *StreamNodeDefinition) Define(golem.WorkflowContext, openai.CompletionNewParams) golem.Execution[StreamNodeResult] {
 	return &StreamNode{}
 }
 
+/*
 func (s *StreamNodeDefinition) Marshal(req openai.CompletionNewParams) ([]byte, error) {
 	return json.Marshal(req)
 }
@@ -46,21 +46,12 @@ func (s *StreamNodeDefinition) Unmarshal(data []byte) (*openai.CompletionNewPara
 	}
 	return req, nil
 }
+*/
 
-func NewStreamNodeDefinition(ctx golem.WorkflowContext, params openai.CompletionNewParams) StreamNodeDefinition {
-	panic("implement me")
-}
-
-func NewStreamNode2(openai.CompletionNewParams) golem.TypeDefinition[openai.CompletionNewParams, StreamNodeResult] {
-	return golem.DefineType(func(req openai.CompletionNewParams) golem.Definer[openai.CompletionNewParams, StreamNodeResult] {
+func NodeType() golem.NodeType[openai.CompletionNewParams, StreamNodeResult] {
+	return golem.DefineNodeType(func(req openai.CompletionNewParams) golem.Definer[openai.CompletionNewParams, StreamNodeResult] {
 		return &StreamNodeDefinition{}
 	})
-}
-
-var streamNodeType golem.Type[openai.CompletionNewParams, StreamNodeResult] = NewStreamNode2
-
-func Type() golem.Type[openai.CompletionNewParams, StreamNodeResult] {
-	return streamNodeType
 }
 
 type StreamNodeResult struct {
@@ -68,7 +59,7 @@ type StreamNodeResult struct {
 	result string
 }
 
-func NewStreamNode(ctx context.Context, client *openai.Client, params openai.CompletionNewParams) *StreamNode {
+func newStreamNode(ctx context.Context, client *openai.Client, params openai.CompletionNewParams) *StreamNode {
 	return &StreamNode{
 		started:         false,
 		completed:       false,
@@ -80,12 +71,12 @@ func NewStreamNode(ctx context.Context, client *openai.Client, params openai.Com
 	}
 }
 
-func (n *StreamNode) start(ctx context.Context) {
+func (n *StreamNode) start(ctx golem.NodeContext) {
 	if n.started {
 		return
 	}
 	// golem.RegisterDryRunNode(ctx)
-	n.stream = n.client.Completions.NewStreaming(ctx, n.params)
+	n.stream = n.client.Completions.NewStreaming(context.Background(), n.params)
 	n.started = true
 }
 
@@ -107,7 +98,7 @@ func (n *StreamNode) token() (token string) {
 	return ""
 }
 
-func (n *StreamNode) Get(ctx node.Context) (StreamNodeResult, error) {
+func (n *StreamNode) Get(ctx golem.NodeContext) (StreamNodeResult, error) {
 	n.once.Do(func() {
 		n.start(ctx)
 		for n.next() {
