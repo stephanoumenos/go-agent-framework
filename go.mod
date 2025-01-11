@@ -1,4 +1,4 @@
-module golem
+module ivy
 
 go 1.23.4
 

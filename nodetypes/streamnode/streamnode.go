@@ -3,7 +3,7 @@ package streamnode
 import (
 	"context"
 	"encoding/json"
-	"golem/golem"
+	"ivy"
 	"strings"
 	"sync"
 
@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	_ golem.Execution[StreamNodeResult] = (*StreamNode)(nil)
+	_ ivy.Execution[StreamNodeResult] = (*StreamNode)(nil)
 )
 
 type StreamNode struct {
@@ -28,9 +28,9 @@ type StreamNode struct {
 
 type StreamNodeDefinition struct{}
 
-var _ golem.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
+var _ ivy.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
 
-func (s *StreamNodeDefinition) Define(golem.WorkflowContext, openai.CompletionNewParams) golem.Execution[StreamNodeResult] {
+func (s *StreamNodeDefinition) Define(ivy.WorkflowContext, openai.CompletionNewParams) ivy.Execution[StreamNodeResult] {
 	return &StreamNode{}
 }
 
@@ -48,8 +48,8 @@ func (s *StreamNodeDefinition) Unmarshal(data []byte) (*openai.CompletionNewPara
 }
 */
 
-func NodeType() golem.NodeType[openai.CompletionNewParams, StreamNodeResult] {
-	return golem.DefineNodeType(func(req openai.CompletionNewParams) golem.Definer[openai.CompletionNewParams, StreamNodeResult] {
+func NodeType() ivy.NodeType[openai.CompletionNewParams, StreamNodeResult] {
+	return ivy.DefineNodeType(func(req openai.CompletionNewParams) ivy.Definer[openai.CompletionNewParams, StreamNodeResult] {
 		return &StreamNodeDefinition{}
 	})
 }
@@ -71,11 +71,11 @@ func newStreamNode(ctx context.Context, client *openai.Client, params openai.Com
 	}
 }
 
-func (n *StreamNode) start(ctx golem.NodeContext) {
+func (n *StreamNode) start(ctx ivy.NodeContext) {
 	if n.started {
 		return
 	}
-	// golem.RegisterDryRunNode(ctx)
+	// ivy.RegisterDryRunNode(ctx)
 	n.stream = n.client.Completions.NewStreaming(context.Background(), n.params)
 	n.started = true
 }
@@ -98,7 +98,7 @@ func (n *StreamNode) token() (token string) {
 	return ""
 }
 
-func (n *StreamNode) Get(ctx golem.NodeContext) (StreamNodeResult, error) {
+func (n *StreamNode) Get(ctx ivy.NodeContext) (StreamNodeResult, error) {
 	n.once.Do(func() {
 		n.start(ctx)
 		for n.next() {

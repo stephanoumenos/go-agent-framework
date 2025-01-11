@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"golem/golem"
-	"golem/nodetypes/requestmapper"
-	"golem/nodetypes/streamnode"
 	"io"
+	"ivy"
+	"ivy/nodetypes/requestmapper"
+	"ivy/nodetypes/streamnode"
 
 	"github.com/openai/openai-go"
 	option "github.com/openai/openai-go/option"
@@ -27,15 +27,15 @@ func main() {
 		return mappedReq, nil
 	})
 
-	golem.HandleFunc("client-internet-troubleshooting", reqMapper, func(ctx golem.WorkflowContext, req openai.CompletionNewParams) error {
-		veganNode := golem.NewNode(ctx, streamnode.NodeType(), openai.CompletionNewParams{
+	ivy.HandleFunc("client-internet-troubleshooting", reqMapper, func(ctx ivy.WorkflowContext, req openai.CompletionNewParams) error {
+		veganNode := ivy.NewNode(ctx, streamnode.NodeType(), openai.CompletionNewParams{
 			Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
 			Model:       openai.F(openai.CompletionNewParamsModel("model/")),
 			MaxTokens:   openai.F(int64(512)),
 			Temperature: openai.F(1.000000),
 		})
 
-		nodeDynamic := golem.NewAgenticNode(ctx, streamnode.NodeType(), func(ctx golem.NodeContext) (openai.CompletionNewParams, error) {
+		nodeDynamic := ivy.NewAgenticNode(ctx, streamnode.NodeType(), func(ctx ivy.NodeContext) (openai.CompletionNewParams, error) {
 			result, err := veganNode.Get(ctx)
 
 			return openai.CompletionNewParams{
