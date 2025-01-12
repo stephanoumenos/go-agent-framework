@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	_ ivy.Execution[StreamNodeResult] = (*StreamNode)(nil)
+	_ ivy.NodeResolver[StreamNodeResult] = (*StreamNode)(nil)
 )
 
 type StreamNode struct {
@@ -30,23 +30,9 @@ type StreamNodeDefinition struct{}
 
 var _ ivy.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
 
-func (s *StreamNodeDefinition) Define(ivy.WorkflowContext, openai.CompletionNewParams) ivy.Execution[StreamNodeResult] {
+func (s *StreamNodeDefinition) Define(ivy.WorkflowContext, openai.CompletionNewParams) ivy.NodeResolver[StreamNodeResult] {
 	return &StreamNode{}
 }
-
-/*
-func (s *StreamNodeDefinition) Marshal(req openai.CompletionNewParams) ([]byte, error) {
-	return json.Marshal(req)
-}
-
-func (s *StreamNodeDefinition) Unmarshal(data []byte) (*openai.CompletionNewParams, error) {
-	var req *openai.CompletionNewParams
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, err
-	}
-	return req, nil
-}
-*/
 
 func NodeType() ivy.NodeType[openai.CompletionNewParams, StreamNodeResult] {
 	return ivy.DefineNodeType(func(req openai.CompletionNewParams) ivy.Definer[openai.CompletionNewParams, StreamNodeResult] {
@@ -55,8 +41,8 @@ func NodeType() ivy.NodeType[openai.CompletionNewParams, StreamNodeResult] {
 }
 
 type StreamNodeResult struct {
-	params openai.CompletionNewParams
-	result string
+	Params openai.CompletionNewParams
+	Result string
 }
 
 func newStreamNode(ctx context.Context, client *openai.Client, params openai.CompletionNewParams) *StreamNode {
@@ -111,8 +97,8 @@ func (n *StreamNode) Get(ctx ivy.NodeContext) (StreamNodeResult, error) {
 		return StreamNodeResult{}, n.err
 	}
 	return StreamNodeResult{
-		params: n.params,
-		result: n.response.String(),
+		Params: n.params,
+		Result: n.response.String(),
 	}, nil
 }
 
