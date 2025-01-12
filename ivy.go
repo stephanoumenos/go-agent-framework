@@ -49,7 +49,7 @@ func StaticNode[In, Out any](ctx WorkflowContext, _type NodeType[In, Out], in In
 		result: Result[In, Out]{
 			Input: in,
 		},
-		resolver: _type(ctx, in).definer.Define(ctx, in),
+		resolver: _type(ctx, in).definer.Define(),
 	}
 }
 
@@ -77,7 +77,7 @@ func Node[In, Out any](ctx WorkflowContext, _type NodeType[In, Out], fun func(No
 		if n.err != nil {
 			return
 		}
-		n.result.Output, n.err = _type(ctx, n.result.Input).definer.Define(ctx, n.result.Input).Get(nc)
+		n.result.Output, n.err = _type(ctx, n.result.Input).definer.Define().Get(nc)
 	}
 	return &n
 }
@@ -87,7 +87,7 @@ type NodeType[In, Out any] func(WorkflowContext, In) Definition[In, Out]
 // Node implementations must implement this interface to be used in the supervisor.
 // N.B.: it's unexported to prevent users from implementing it directly.
 type Definer[In, Out any] interface {
-	Define(WorkflowContext, In) NodeResolver[Out]
+	Define() NodeResolver[Out]
 }
 
 type Definition[In, Out any] struct {
@@ -96,7 +96,7 @@ type Definition[In, Out any] struct {
 }
 
 func (n Definition[In, Out]) define(ctx WorkflowContext, req In) NodeResolver[Out] {
-	return n.definer.Define(ctx, req)
+	return n.definer.Define()
 }
 
 type NodeTypeID string

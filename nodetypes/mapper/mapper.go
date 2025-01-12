@@ -30,6 +30,6 @@ func NodeType[In, Out any](mapper func(In) (Out, error)) ivy.NodeType[In, Out] {
 	})
 }
 
-func (j *MapperDefinition[In, Out]) Define(ctx ivy.WorkflowContext, input In) ivy.NodeResolver[Out] {
-	return &Mapper[In, Out]{mapper: j.fun, input: input}
+func (j *MapperDefinition[In, Out]) Define() ivy.NodeResolver[Out] {
+	return &Mapper[In, Out]{mapper: j.fun, input: j.input}
 }

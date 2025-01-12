@@ -32,7 +32,7 @@ type StreamNodeDefinition struct{}
 
 var _ ivy.Definer[openai.CompletionNewParams, StreamNodeResult] = (*StreamNodeDefinition)(nil)
 
-func (s *StreamNodeDefinition) Define(ivy.WorkflowContext, openai.CompletionNewParams) ivy.NodeResolver[StreamNodeResult] {
+func (s *StreamNodeDefinition) Define() ivy.NodeResolver[StreamNodeResult] {
 	return &StreamNode{}
 }
 
