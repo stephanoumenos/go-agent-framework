@@ -1,6 +1,7 @@
 package ivy
 
 import (
+	"fmt"
 	"io"
 	"sync"
 )
@@ -11,19 +12,48 @@ import (
 type WorkflowContext interface {
 }
 
-type HandlerFunc[In any] func(WorkflowContext, In) (WorkflowOutput, error)
+type HandlerFunc[In, OutputReq any] func(WorkflowContext, In) (WorkflowOutput[OutputReq], error)
 
-type WorkflowOutput NodeType[any, io.ReadCloser]
+type WorkflowOutput[Req any] Output[Req, io.ReadCloser]
 
 var (
 	mu       sync.RWMutex
 	handlers = make(map[string]any)
 )
 
-func Workflow[In any](route string, startNodeType NodeType[io.ReadCloser, In], handler HandlerFunc[In]) {
+type userHandler[In, OutputReq any] struct {
+	startNodeType NodeType[io.ReadCloser, In]
+	handler       HandlerFunc[In, OutputReq]
+}
+
+func Workflow[In, OutputReq any](route string, startNodeType NodeType[io.ReadCloser, In], handler HandlerFunc[In, OutputReq]) {
 	mu.Lock()
-	handlers[route] = handler
+	handlers[route] = userHandler[In, OutputReq]{
+		startNodeType: startNodeType,
+		handler:       handler,
+	}
 	mu.Unlock()
+}
+
+func RunWorkflow(route string, req io.ReadCloser) (io.ReadCloser, error) {
+	routeHandler, ok := handlers[route]
+	if !ok {
+		return nil, fmt.Errorf("handler not found")
+	}
+	handler, ok := routeHandler.(userHandler[any, any])
+	mappedReq, err := handler.startNodeType(nil, req).definer.Define().Get(NodeContext{})
+	if err != nil {
+		return nil, err
+	}
+	output, err := handler.handler(nil, mappedReq)
+	if err != nil {
+		return nil, err
+	}
+	result, err := output.Get(NodeContext{})
+	if err != nil {
+		return nil, err
+	}
+	return result.Output, nil
 }
 
 type staticNode[In, Out any] struct {
