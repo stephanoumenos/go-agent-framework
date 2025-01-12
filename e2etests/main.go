@@ -9,7 +9,7 @@ import (
 	"ivy/nodetypes/mapper"
 	nt "ivy/nodetypes/openai"
 
-	"github.com/openai/openai-go"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 type VeganQuestions struct {
@@ -24,13 +24,15 @@ For each argument, provide a clear, concise description that captures the essent
 Your output must be structured in the JSON format specified by the provided schema.
 `
 
+var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
+
 func main() {
-	reqMapper := mapper.NodeType(func(req io.ReadCloser) (mapped openai.ChatCompletionNewParams, err error) {
+	reqMapper := mapper.NodeType(func(req io.ReadCloser) (mapped openai.ChatCompletionRequest, err error) {
 		json.NewDecoder(req).Decode(&mapped)
 		return
 	})
 
-	ivy.Workflow("carnist-debunker", reqMapper, func(ctx ivy.WorkflowContext, req openai.ChatCompletionNewParams) (ivy.WorkflowOutput[VeganQuestions], error) {
+	ivy.Workflow("carnist-debunker", reqMapper, func(ctx ivy.WorkflowContext, req openai.ChatCompletionRequest) (ivy.WorkflowOutput[VeganQuestions], error) {
 		questions := ivy.StaticNode(ctx, nt.NodeType[VeganQuestions](), req)
 
 		return ivy.Node(ctx, mapper.NodeType(func(req VeganQuestions) (io.ReadCloser, error) {
@@ -49,14 +51,14 @@ func main() {
 	})
 
 	// Test
-	req := openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(systemMsg),
-			openai.UserMessage("Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."),
-		}),
-		Model:       openai.F(openai.ChatModel("model/")),
-		MaxTokens:   openai.F(int64(2048)),
-		Temperature: openai.F(1.000000),
+	req := openai.ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem},
+			{Content: carnistUserMsg, Role: openai.ChatMessageRoleUser},
+		},
+		Model:       "model/",
+		MaxTokens:   2048,
+		Temperature: 1.000000,
 	}
 	marshalled, err := json.Marshal(req)
 	if err != nil {

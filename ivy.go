@@ -21,39 +21,46 @@ var (
 	handlers = make(map[string]any)
 )
 
-type userHandler[In, OutputReq any] struct {
-	startNodeType NodeType[io.ReadCloser, In]
-	handler       HandlerFunc[In, OutputReq]
+type userHandler struct {
+	startNodeType any
+	handler       any
 }
 
 func Workflow[In, OutputReq any](route string, startNodeType NodeType[io.ReadCloser, In], handler HandlerFunc[In, OutputReq]) {
 	mu.Lock()
-	handlers[route] = userHandler[In, OutputReq]{
-		startNodeType: startNodeType,
-		handler:       handler,
+	var resolve resolveWorkflow = func(req io.ReadCloser) (io.ReadCloser, error) {
+		mapped, err := startNodeType(nil, req).definer.Define().Get(NodeContext{})
+		if err != nil {
+			return nil, err
+		}
+		out, err := handler(nil, mapped)
+		if err != nil {
+			return nil, err
+		}
+		result, err := out.Get(NodeContext{})
+		if err != nil {
+			return nil, err
+		}
+		return result.Output, nil
 	}
+	handlers[route] = resolve
 	mu.Unlock()
 }
 
+type resolveWorkflow func(io.ReadCloser) (io.ReadCloser, error)
+
 func RunWorkflow(route string, req io.ReadCloser) (io.ReadCloser, error) {
+	mu.RLock()
 	routeHandler, ok := handlers[route]
+	mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("handler not found")
 	}
-	handler, ok := routeHandler.(userHandler[any, any])
-	mappedReq, err := handler.startNodeType(nil, req).definer.Define().Get(NodeContext{})
-	if err != nil {
-		return nil, err
+	handler, ok := routeHandler.(resolveWorkflow)
+	if !ok {
+		return nil, fmt.Errorf("error getting handler")
 	}
-	output, err := handler.handler(nil, mappedReq)
-	if err != nil {
-		return nil, err
-	}
-	result, err := output.Get(NodeContext{})
-	if err != nil {
-		return nil, err
-	}
-	return result.Output, nil
+	return handler(req)
 }
 
 type staticNode[In, Out any] struct {
