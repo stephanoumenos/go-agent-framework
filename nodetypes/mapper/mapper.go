@@ -8,13 +8,15 @@ var (
 	_ ivy.NodeResolver[any] = (*Mapper[any, any])(nil)
 )
 
+const nodeTypeID ivy.NodeTypeID = "mapper"
+
 type Mapper[In, Out any] struct {
-	fun   func(In) (Out, error)
-	input In
+	mapper func(In) (Out, error)
+	input  In
 }
 
 func (j *Mapper[In, Out]) Get(ivy.NodeContext) (Out, error) {
-	return j.fun(j.input)
+	return j.mapper(j.input)
 }
 
 type MapperDefinition[In, Out any] struct {
@@ -22,12 +24,12 @@ type MapperDefinition[In, Out any] struct {
 	input In
 }
 
-func NodeType[In, Out any](fun func(In) (Out, error)) ivy.NodeType[In, Out] {
-	return ivy.DefineNodeType(func(req In) ivy.Definer[In, Out] {
-		return &MapperDefinition[In, Out]{fun: fun, input: req}
+func NodeType[In, Out any](mapper func(In) (Out, error)) ivy.NodeType[In, Out] {
+	return ivy.DefineNodeType(nodeTypeID, func(req In) ivy.Definer[In, Out] {
+		return &MapperDefinition[In, Out]{fun: mapper, input: req}
 	})
 }
 
 func (j *MapperDefinition[In, Out]) Define(ctx ivy.WorkflowContext, input In) ivy.NodeResolver[Out] {
-	return &Mapper[In, Out]{fun: j.fun, input: input}
+	return &Mapper[In, Out]{mapper: j.fun, input: input}
 }

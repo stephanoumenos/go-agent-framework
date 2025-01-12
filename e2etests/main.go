@@ -64,4 +64,11 @@ func main() {
 
 		return nil, nil
 	})
+
+	veganNode := ivy.StaticNode(ctx, streamnode.NodeType(), openai.CompletionNewParams{
+		Prompt:      openai.F[openai.CompletionNewParamsPromptUnion](shared.UnionString("You are the best vegan activist that has ever existed.")),
+		Model:       openai.F(openai.CompletionNewParamsModel("model/")),
+		MaxTokens:   openai.F(int64(512)),
+		Temperature: openai.F(1.000000),
+	})
 }

@@ -15,6 +15,8 @@ var (
 	_ ivy.NodeResolver[StreamNodeResult] = (*StreamNode)(nil)
 )
 
+const nodeTypeID ivy.NodeTypeID = "streamnode"
+
 type StreamNode struct {
 	started, completed bool
 	client             *openai.Client
@@ -35,7 +37,7 @@ func (s *StreamNodeDefinition) Define(ivy.WorkflowContext, openai.CompletionNewP
 }
 
 func NodeType() ivy.NodeType[openai.CompletionNewParams, StreamNodeResult] {
-	return ivy.DefineNodeType(func(req openai.CompletionNewParams) ivy.Definer[openai.CompletionNewParams, StreamNodeResult] {
+	return ivy.DefineNodeType(nodeTypeID, func(req openai.CompletionNewParams) ivy.Definer[openai.CompletionNewParams, StreamNodeResult] {
 		return &StreamNodeDefinition{}
 	})
 }
