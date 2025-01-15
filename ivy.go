@@ -81,15 +81,6 @@ var (
 	_ Output[any, any] = (*staticNode[any, any])(nil)
 )
 
-func StaticNode[In, Out any](ctx WorkflowContext, _type NodeType[In, Out], in In) Output[In, Out] {
-	return &staticNode[In, Out]{
-		result: Result[In, Out]{
-			Input: in,
-		},
-		resolver: _type(ctx, in).definer.Define(),
-	}
-}
-
 type NodeContext struct {
 }
 
@@ -107,6 +98,22 @@ func (n *node[In, Out]) Get(ctx NodeContext) (Result[In, Out], error) {
 	return n.result, n.err
 }
 
+type inode[In, Out any] struct {
+}
+
+func (n *inode[In, Out]) Input(func(NodeContext) (In, error)) Output[In, Out] {
+	return nil
+}
+
+func (n *inode[In, Out]) StaticInput(In) Output[In, Out] {
+	return nil
+}
+
+func Node2[In, Out any](ctx WorkflowContext) *inode[In, Out] {
+	return nil
+}
+
+/*
 func Node[In, Out any](ctx WorkflowContext, _type NodeType[In, Out], fun func(NodeContext) (In, error)) Output[In, Out] {
 	var n node[In, Out]
 	n.resolver = func(nc NodeContext) {
@@ -118,8 +125,14 @@ func Node[In, Out any](ctx WorkflowContext, _type NodeType[In, Out], fun func(No
 	}
 	return &n
 }
+*/
 
-type NodeType[In, Out any] func(WorkflowContext, In) Definition[In, Out]
+type NodeType[In, Out any] interface {
+	Input(func(NodeContext) (In, error)) Output[In, Out]
+	StaticInput(In) Output[In, Out]
+}
+
+type nodeType[In, Out any] func(WorkflowContext, In) definition[In, Out]
 
 // Node implementations must implement this interface to be used in the supervisor.
 // N.B.: it's unexported to prevent users from implementing it directly.
@@ -127,21 +140,27 @@ type Definer[In, Out any] interface {
 	Define() NodeResolver[Out]
 }
 
-type Definition[In, Out any] struct {
-	definer Definer[In, Out]
-	typeID  NodeTypeID
+type definition[In, Out any] struct {
+	fun    func(In) Definer[In, Out]
+	typeID NodeTypeID
 }
 
-func (n Definition[In, Out]) define(ctx WorkflowContext, req In) NodeResolver[Out] {
-	return n.definer.Define()
+func (d *definition[In, Out]) Input(func(NodeContext) (In, error)) Output[In, Out] {
+	return nil
+}
+
+func (d *definition[In, Out]) StaticInput(In) Output[In, Out] {
+	return nil
+}
+
+func (n definition[In, Out]) define(ctx WorkflowContext, req In) NodeResolver[Out] {
+	return n.fun(req).Define()
 }
 
 type NodeTypeID string
 
 func DefineNodeType[In, Out any](id NodeTypeID, fun func(In) Definer[In, Out]) NodeType[In, Out] {
-	return func(_ WorkflowContext, req In) Definition[In, Out] {
-		return Definition[In, Out]{definer: fun(req), typeID: id}
-	}
+	return &definition[In, Out]{fun: fun, typeID: id}
 }
 
 type NodeResolver[Out any] interface {
@@ -155,4 +174,8 @@ type Result[In, Out any] struct {
 
 type Output[In, Out any] interface {
 	Get(NodeContext) (Result[In, Out], error)
+}
+
+func Transform[In, Out, TOut any](node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {
+	return nil
 }

@@ -33,21 +33,18 @@ func main() {
 	})
 
 	ivy.Workflow("carnist-debunker", reqMapper, func(ctx ivy.WorkflowContext, req openai.ChatCompletionRequest) (ivy.WorkflowOutput[VeganQuestions], error) {
-		questions := ivy.StaticNode(ctx, nt.NodeType[VeganQuestions](), req)
+		questions := nt.NodeType[VeganQuestions]().
+			StaticInput(req)
 
-		return ivy.Node(ctx, mapper.NodeType(func(req VeganQuestions) (io.ReadCloser, error) {
+		marshaled := ivy.Transform(questions, func(req VeganQuestions) (io.ReadCloser, error) {
 			data, err := json.Marshal(req)
 			if err != nil {
 				return nil, err
 			}
 			return io.NopCloser(bytes.NewReader(data)), nil
-		}), func(nc ivy.NodeContext) (VeganQuestions, error) {
-			result, err := questions.Get(nc)
-			if err != nil {
-				return VeganQuestions{}, err
-			}
-			return result.Output, nil
-		}), nil
+		})
+
+		return marshaled, nil
 	})
 
 	// Test
