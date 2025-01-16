@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"io"
 	"ivy"
-	"ivy/nodetypes/mapper"
-	nt "ivy/nodetypes/openai"
+	"ivy/nodetypes/openai"
 
-	openai "github.com/sashabaranov/go-openai"
+	goopenai "github.com/sashabaranov/go-openai"
 )
 
 type VeganQuestions struct {
@@ -27,31 +26,21 @@ Your output must be structured in the JSON format specified by the provided sche
 var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
 
 func main() {
-	reqMapper := mapper.NodeType(func(req io.ReadCloser) (mapped openai.ChatCompletionRequest, err error) {
-		json.NewDecoder(req).Decode(&mapped)
-		return
-	})
-
-	ivy.Workflow("carnist-debunker", reqMapper, func(ctx ivy.WorkflowContext, req openai.ChatCompletionRequest) (ivy.WorkflowOutput[VeganQuestions], error) {
-		questions := nt.NodeType[VeganQuestions]().
-			StaticInput(req)
-
-		marshaled := ivy.Transform(questions, func(req VeganQuestions) (io.ReadCloser, error) {
-			data, err := json.Marshal(req)
-			if err != nil {
-				return nil, err
-			}
-			return io.NopCloser(bytes.NewReader(data)), nil
-		})
-
-		return marshaled, nil
-	})
+	ivy.Workflow(
+		"carnist-debunker",
+		ivy.RequestFromJSON[goopenai.ChatCompletionRequest](),
+		func(ctx ivy.WorkflowContext, req goopenai.ChatCompletionRequest) ivy.WorkflowOutput[VeganQuestions] {
+			return ivy.ResponseToJSON(
+				openai.StructuredOutput[VeganQuestions]().Input(req),
+			)
+		},
+	)
 
 	// Test
-	req := openai.ChatCompletionRequest{
-		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem},
-			{Content: carnistUserMsg, Role: openai.ChatMessageRoleUser},
+	req := goopenai.ChatCompletionRequest{
+		Messages: []goopenai.ChatCompletionMessage{
+			{Role: goopenai.ChatMessageRoleSystem},
+			{Content: carnistUserMsg, Role: goopenai.ChatMessageRoleUser},
 		},
 		Model:       "model/",
 		MaxTokens:   2048,

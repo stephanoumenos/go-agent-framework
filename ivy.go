@@ -1,6 +1,8 @@
 package ivy
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
@@ -12,7 +14,7 @@ import (
 type WorkflowContext interface {
 }
 
-type HandlerFunc[In, OutputReq any] func(WorkflowContext, In) (WorkflowOutput[OutputReq], error)
+type HandlerFunc[In, OutputReq any] func(WorkflowContext, In) WorkflowOutput[OutputReq]
 
 type WorkflowOutput[Req any] Output[Req, io.ReadCloser]
 
@@ -29,19 +31,22 @@ type userHandler struct {
 func Workflow[In, OutputReq any](route string, startNodeType NodeType[io.ReadCloser, In], handler HandlerFunc[In, OutputReq]) {
 	mu.Lock()
 	var resolve resolveWorkflow = func(req io.ReadCloser) (io.ReadCloser, error) {
-		mapped, err := startNodeType(nil, req).definer.Define().Get(NodeContext{})
-		if err != nil {
-			return nil, err
-		}
-		out, err := handler(nil, mapped)
-		if err != nil {
-			return nil, err
-		}
-		result, err := out.Get(NodeContext{})
-		if err != nil {
-			return nil, err
-		}
-		return result.Output, nil
+		/*
+			mapped, err := startNodeType(nil, req).definer.Define().Get(NodeContext{})
+			if err != nil {
+				return nil, err
+			}
+			out, err := handler(nil, mapped)
+			if err != nil {
+				return nil, err
+			}
+			result, err := out.Get(NodeContext{})
+			if err != nil {
+				return nil, err
+			}
+			return result.Output, nil
+		*/
+		return nil, nil
 	}
 	handlers[route] = resolve
 	mu.Unlock()
@@ -113,23 +118,9 @@ func Node2[In, Out any](ctx WorkflowContext) *inode[In, Out] {
 	return nil
 }
 
-/*
-func Node[In, Out any](ctx WorkflowContext, _type NodeType[In, Out], fun func(NodeContext) (In, error)) Output[In, Out] {
-	var n node[In, Out]
-	n.resolver = func(nc NodeContext) {
-		n.result.Input, n.err = fun(nc)
-		if n.err != nil {
-			return
-		}
-		n.result.Output, n.err = _type(ctx, n.result.Input).definer.Define().Get(nc)
-	}
-	return &n
-}
-*/
-
 type NodeType[In, Out any] interface {
-	Input(func(NodeContext) (In, error)) Output[In, Out]
-	StaticInput(In) Output[In, Out]
+	FanIn(func(NodeContext) (In, error)) Output[In, Out]
+	Input(In) Output[In, Out]
 }
 
 type nodeType[In, Out any] func(WorkflowContext, In) definition[In, Out]
@@ -145,11 +136,11 @@ type definition[In, Out any] struct {
 	typeID NodeTypeID
 }
 
-func (d *definition[In, Out]) Input(func(NodeContext) (In, error)) Output[In, Out] {
+func (d *definition[In, Out]) FanIn(func(NodeContext) (In, error)) Output[In, Out] {
 	return nil
 }
 
-func (d *definition[In, Out]) StaticInput(In) Output[In, Out] {
+func (d *definition[In, Out]) Input(In) Output[In, Out] {
 	return nil
 }
 
@@ -177,5 +168,51 @@ type Output[In, Out any] interface {
 }
 
 func Transform[In, Out, TOut any](node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {
+	return mapperNodeType(func(in Out) (TOut, error) {
+		return fun(in)
+	}).FanIn(func(nc NodeContext) (Out, error) {
+		out, err := node.Get(nc)
+		return out.Output, err
+	})
+}
+
+func Request[In any](fun func(io.ReadCloser) (In, error)) NodeType[io.ReadCloser, In] {
+	return mapperNodeType(fun)
+}
+
+func RequestFromJSON[In any]() NodeType[io.ReadCloser, In] {
+	return mapperNodeType(func(req io.ReadCloser) (In, error) {
+		var in In
+		if err := json.NewDecoder(req).Decode(&in); err != nil {
+			return in, err
+		}
+		return in, nil
+	})
+}
+
+func Response[Out any](fun func(Out) (io.ReadCloser, error)) NodeType[Out, io.ReadCloser] {
+	return mapperNodeType(fun)
+}
+
+func ResponseToJSON[In, Out any](finalNode Output[In, Out]) WorkflowOutput[Out] {
+	return mapperNodeType(func(out Out) (io.ReadCloser, error) {
+		buf := new(bytes.Buffer)
+		if err := json.NewEncoder(buf).Encode(out); err != nil {
+			return nil, err
+		}
+		return io.NopCloser(buf), nil
+	}).FanIn(func(nc NodeContext) (Out, error) {
+		response, err := finalNode.Get(nc)
+		return response.Output, err
+	})
+}
+
+/* Ideas
+func FanOut[In, Out any](node Output[In, Out], fun func(NodeContext, In)) []Output[In, Out] {
 	return nil
 }
+
+func ChainOfThought[In, Out, ROut any](n Output[In, Out], rewardModel NodeType[Out, ROut]) Output[In, Out] {
+	return nil
+}
+*/
