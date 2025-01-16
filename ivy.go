@@ -31,22 +31,21 @@ type userHandler struct {
 func Workflow[In, OutputReq any](route string, startNodeType NodeType[io.ReadCloser, In], handler HandlerFunc[In, OutputReq]) {
 	mu.Lock()
 	var resolve resolveWorkflow = func(req io.ReadCloser) (io.ReadCloser, error) {
-		/*
-			mapped, err := startNodeType(nil, req).definer.Define().Get(NodeContext{})
-			if err != nil {
-				return nil, err
-			}
-			out, err := handler(nil, mapped)
-			if err != nil {
-				return nil, err
-			}
-			result, err := out.Get(NodeContext{})
-			if err != nil {
-				return nil, err
-			}
-			return result.Output, nil
-		*/
-		return nil, nil
+		start := startNodeType.Input(req)
+
+		var nCtx NodeContext
+		startResult, err := start.Get(nCtx)
+		if err != nil {
+			return nil, err
+		}
+
+		var ctx WorkflowContext
+		workflowResult, err := handler(ctx, startResult.Output).Get(nCtx)
+		if err != nil {
+			return nil, err
+		}
+
+		return workflowResult.Output, nil
 	}
 	handlers[route] = resolve
 	mu.Unlock()
@@ -103,21 +102,6 @@ func (n *node[In, Out]) Get(ctx NodeContext) (Result[In, Out], error) {
 	return n.result, n.err
 }
 
-type inode[In, Out any] struct {
-}
-
-func (n *inode[In, Out]) Input(func(NodeContext) (In, error)) Output[In, Out] {
-	return nil
-}
-
-func (n *inode[In, Out]) StaticInput(In) Output[In, Out] {
-	return nil
-}
-
-func Node2[In, Out any](ctx WorkflowContext) *inode[In, Out] {
-	return nil
-}
-
 type NodeType[In, Out any] interface {
 	FanIn(func(NodeContext) (In, error)) Output[In, Out]
 	Input(In) Output[In, Out]
@@ -136,12 +120,45 @@ type definition[In, Out any] struct {
 	typeID NodeTypeID
 }
 
-func (d *definition[In, Out]) FanIn(func(NodeContext) (In, error)) Output[In, Out] {
-	return nil
+type outputFromFanin[In, Out any] struct {
+	d   *definition[In, Out]
+	fun func(NodeContext) (In, error)
 }
 
-func (d *definition[In, Out]) Input(In) Output[In, Out] {
-	return nil
+func (o *outputFromFanin[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
+	var (
+		r   Result[In, Out]
+		err error
+	)
+	r.Input, err = o.fun(nc)
+	r.Output, err = o.d.define(nil, r.Input).Get(nc)
+	return r, err
+}
+
+type outputFromInput[In, Out any] struct {
+	d  *definition[In, Out]
+	in In
+}
+
+func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
+	r := Result[In, Out]{Input: o.in}
+	var err error
+	r.Output, err = o.d.define(nil, o.in).Get(nc)
+	return r, err
+}
+
+func (d *definition[In, Out]) FanIn(fun func(NodeContext) (In, error)) Output[In, Out] {
+	return &outputFromFanin[In, Out]{
+		d:   d,
+		fun: fun,
+	}
+}
+
+func (d *definition[In, Out]) Input(in In) Output[In, Out] {
+	return &outputFromInput[In, Out]{
+		d:  d,
+		in: in,
+	}
 }
 
 func (n definition[In, Out]) define(ctx WorkflowContext, req In) NodeResolver[Out] {
