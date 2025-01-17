@@ -11,10 +11,12 @@ import (
 // WorkflowContext serves two purposes:
 // 1. Prevent users from calling functions outside llm.Suppervise.
 // 2. Lets us store variables with the state of the graph.
-type WorkflowContext interface {
+type WorkflowContext struct {
+	NodeContext NodeContext
 }
 
 type HandlerFunc[In, OutputReq any] func(WorkflowContext, In) WorkflowOutput[OutputReq]
+type resolveWorkflow func(io.ReadCloser) (io.ReadCloser, error)
 
 type WorkflowInput[Req any] NodeType[io.ReadCloser, Req]
 type WorkflowOutput[Req any] Output[Req, io.ReadCloser]
@@ -40,19 +42,18 @@ func Workflow[In, OutputReq any](route string, startNodeType NodeType[io.ReadClo
 			return nil, err
 		}
 
-		var ctx WorkflowContext
-		workflowResult, err := handler(ctx, startResult.Output).Get(nCtx)
+		ctx := WorkflowContext{NodeContext: nCtx}
+		resultNode := handler(ctx, startResult.Output)
+		result, err := resultNode.Get(nCtx)
 		if err != nil {
 			return nil, err
 		}
 
-		return workflowResult.Output, nil
+		return result.Output, nil
 	}
 	handlers[route] = resolve
 	mu.Unlock()
 }
-
-type resolveWorkflow func(io.ReadCloser) (io.ReadCloser, error)
 
 func RunWorkflow(route string, req io.ReadCloser) (io.ReadCloser, error) {
 	mu.RLock()
@@ -69,20 +70,25 @@ func RunWorkflow(route string, req io.ReadCloser) (io.ReadCloser, error) {
 }
 
 type NodeContext struct {
+	m map[nodeKey]nodeState
 }
 
-type node[In, Out any] struct {
-	result   Result[In, Out]
-	resolver func(NodeContext)
-	err      error
-	once     sync.Once
+type nodeKey struct {
+	nodeID   NodeID
+	nodeType NodeTypeID
 }
 
-func (n *node[In, Out]) Get(ctx NodeContext) (Result[In, Out], error) {
-	n.once.Do(func() {
-		n.resolver(ctx)
-	})
-	return n.result, n.err
+type nodeStatus string
+
+const (
+	nodeStatusPending nodeStatus = "pending"
+	nodeStatusRunning nodeStatus = "running"
+	nodeStatusDone    nodeStatus = "done"
+)
+
+type nodeState []struct{}
+
+func (nc *NodeContext) defineNode(n *nodeKey) {
 }
 
 type NodeType[In, Out any] interface {
@@ -145,8 +151,21 @@ func (d *definition[In, Out]) Input(in In) Output[In, Out] {
 	}
 }
 
-func (n definition[In, Out]) define(ctx WorkflowContext, req In) NodeResolver[Out] {
-	return n.fun(req).Define()
+type nodeResolver[Out any] struct {
+	ctx                  NodeContext
+	nodeTypeNodeResolver NodeResolver[Out]
+}
+
+func (n *nodeResolver[Out]) Get(nc NodeContext) (Out, error) {
+	return n.nodeTypeNodeResolver.Get(nc)
+}
+
+func (n definition[In, Out]) define(ctx NodeContext, req In) NodeResolver[Out] {
+	ctx.defineNode(&nodeKey{
+		nodeID:   n.id,
+		nodeType: n.typeID,
+	})
+	return &nodeResolver[Out]{nodeTypeNodeResolver: n.fun(req).Define(), ctx: ctx}
 }
 
 type NodeID string
