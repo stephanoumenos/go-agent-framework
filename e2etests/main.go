@@ -17,6 +17,10 @@ type VeganQuestions struct {
 	CarnistArgumentThree string `json:"carnist_argument_three" jsonschema_description:"Third carnist argument that is implicitly present in the person's phrase"`
 }
 
+type QuestionAnswer struct {
+	Answer string `json:"answer" jsonschema_description:"The best debunk for the anti-vegan carnist argument. I.e., what an effective vegan activist would say."`
+}
+
 var systemMsg = `
 You are an AI trained to analyze anti-vegan messages and identify the core carnist arguments being made. When presented with a message, extract exactly three main carnist arguments that are either explicitly stated or implicitly present in the text.
 For each argument, provide a clear, concise description that captures the essential reasoning or claim being made. Focus on the underlying logic or justification being used to defend non-vegan practices, rather than just paraphrasing the surface-level statements.
@@ -29,10 +33,35 @@ func main() {
 	ivy.Workflow(
 		"carnist-debunker",
 		ivy.RequestFromJSON[goopenai.ChatCompletionRequest](),
-		func(ctx ivy.WorkflowContext, req goopenai.ChatCompletionRequest) ivy.WorkflowOutput[VeganQuestions] {
-			return ivy.ResponseToJSON(
-				openai.StructuredOutput[VeganQuestions]().Input(req),
-			)
+		func(ctx ivy.WorkflowContext, req goopenai.ChatCompletionRequest) ivy.WorkflowOutput[QuestionAnswer] {
+			threeQuestions := openai.StructuredOutput[VeganQuestions]("three-questions").Input(req)
+
+			answerToFirstQuestion := openai.StructuredOutput[QuestionAnswer]("first-question-answer").
+				FanIn(func(nc ivy.NodeContext) (goopenai.ChatCompletionRequest, error) {
+					req := goopenai.ChatCompletionRequest{
+						Model:       "model/",
+						MaxTokens:   2048,
+						Temperature: 1.000000,
+					}
+					questions, err := threeQuestions.Get(nc)
+					if err != nil {
+						return req, err
+					}
+
+					req.Messages = []goopenai.ChatCompletionMessage{
+						{
+							Content: "You are the best vegan activist ever. Please debunk this non-vegan argument.",
+							Role:    goopenai.ChatMessageRoleSystem,
+						},
+						{
+							Content: questions.Output.CarnistArgumentOne,
+							Role:    goopenai.ChatMessageRoleUser,
+						},
+					}
+					return req, nil
+				})
+
+			return ivy.ResponseToJSON(answerToFirstQuestion)
 		},
 	)
 

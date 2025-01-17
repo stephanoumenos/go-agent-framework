@@ -12,8 +12,8 @@ import (
 
 const nodeTypeID ivy.NodeTypeID = "openai:structured-output"
 
-func StructuredOutput[Out any]() ivy.NodeType[openai.ChatCompletionRequest, Out] {
-	return ivy.DefineNodeType(nodeTypeID, func(in openai.ChatCompletionRequest) ivy.Definer[openai.ChatCompletionRequest, Out] {
+func StructuredOutput[Out any](nodeID ivy.NodeID) ivy.NodeType[openai.ChatCompletionRequest, Out] {
+	return ivy.DefineNodeType(nodeID, nodeTypeID, func(in openai.ChatCompletionRequest) ivy.Definer[openai.ChatCompletionRequest, Out] {
 		return &structuredOutputDefinition[Out]{in}
 	})
 }

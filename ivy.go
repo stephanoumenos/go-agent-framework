@@ -16,6 +16,7 @@ type WorkflowContext interface {
 
 type HandlerFunc[In, OutputReq any] func(WorkflowContext, In) WorkflowOutput[OutputReq]
 
+type WorkflowInput[Req any] NodeType[io.ReadCloser, Req]
 type WorkflowOutput[Req any] Output[Req, io.ReadCloser]
 
 var (
@@ -67,24 +68,6 @@ func RunWorkflow(route string, req io.ReadCloser) (io.ReadCloser, error) {
 	return handler(req)
 }
 
-type staticNode[In, Out any] struct {
-	result   Result[In, Out]
-	resolver NodeResolver[Out]
-	err      error
-	once     sync.Once
-}
-
-func (n *staticNode[In, Out]) Get(ctx NodeContext) (Result[In, Out], error) {
-	n.once.Do(func() {
-		n.result.Output, n.err = n.resolver.Get(ctx)
-	})
-	return n.result, n.err
-}
-
-var (
-	_ Output[any, any] = (*staticNode[any, any])(nil)
-)
-
 type NodeContext struct {
 }
 
@@ -116,6 +99,7 @@ type Definer[In, Out any] interface {
 }
 
 type definition[In, Out any] struct {
+	id     NodeID
 	fun    func(In) Definer[In, Out]
 	typeID NodeTypeID
 }
@@ -131,7 +115,7 @@ func (o *outputFromFanin[In, Out]) Get(nc NodeContext) (Result[In, Out], error) 
 		err error
 	)
 	r.Input, err = o.fun(nc)
-	r.Output, err = o.d.define(nil, r.Input).Get(nc)
+	r.Output, err = o.d.define(nc, r.Input).Get(nc)
 	return r, err
 }
 
@@ -143,7 +127,7 @@ type outputFromInput[In, Out any] struct {
 func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
 	r := Result[In, Out]{Input: o.in}
 	var err error
-	r.Output, err = o.d.define(nil, o.in).Get(nc)
+	r.Output, err = o.d.define(nc, o.in).Get(nc)
 	return r, err
 }
 
@@ -165,10 +149,11 @@ func (n definition[In, Out]) define(ctx WorkflowContext, req In) NodeResolver[Ou
 	return n.fun(req).Define()
 }
 
+type NodeID string
 type NodeTypeID string
 
-func DefineNodeType[In, Out any](id NodeTypeID, fun func(In) Definer[In, Out]) NodeType[In, Out] {
-	return &definition[In, Out]{fun: fun, typeID: id}
+func DefineNodeType[In, Out any](nodeID NodeID, nodeTypeID NodeTypeID, fun func(In) Definer[In, Out]) NodeType[In, Out] {
+	return &definition[In, Out]{id: nodeID, fun: fun, typeID: nodeTypeID}
 }
 
 type NodeResolver[Out any] interface {
@@ -184,8 +169,8 @@ type Output[In, Out any] interface {
 	Get(NodeContext) (Result[In, Out], error)
 }
 
-func Transform[In, Out, TOut any](node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {
-	return mapperNodeType(func(in Out) (TOut, error) {
+func Transform[In, Out, TOut any](nodeID NodeID, node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {
+	return mapperNodeType(nodeID, func(in Out) (TOut, error) {
 		return fun(in)
 	}).FanIn(func(nc NodeContext) (Out, error) {
 		out, err := node.Get(nc)
@@ -194,11 +179,11 @@ func Transform[In, Out, TOut any](node Output[In, Out], fun func(Out) (TOut, err
 }
 
 func Request[In any](fun func(io.ReadCloser) (In, error)) NodeType[io.ReadCloser, In] {
-	return mapperNodeType(fun)
+	return mapperNodeType("request", fun)
 }
 
 func RequestFromJSON[In any]() NodeType[io.ReadCloser, In] {
-	return mapperNodeType(func(req io.ReadCloser) (In, error) {
+	return mapperNodeType("request", func(req io.ReadCloser) (In, error) {
 		var in In
 		if err := json.NewDecoder(req).Decode(&in); err != nil {
 			return in, err
@@ -207,12 +192,12 @@ func RequestFromJSON[In any]() NodeType[io.ReadCloser, In] {
 	})
 }
 
-func Response[Out any](fun func(Out) (io.ReadCloser, error)) NodeType[Out, io.ReadCloser] {
-	return mapperNodeType(fun)
+func Response[In, Out any](finalNode Output[In, Out], fun func(Out) (io.ReadCloser, error)) WorkflowOutput[Out] {
+	return Transform("response", finalNode, fun)
 }
 
 func ResponseToJSON[In, Out any](finalNode Output[In, Out]) WorkflowOutput[Out] {
-	return mapperNodeType(func(out Out) (io.ReadCloser, error) {
+	return mapperNodeType("response", func(out Out) (io.ReadCloser, error) {
 		buf := new(bytes.Buffer)
 		if err := json.NewEncoder(buf).Encode(out); err != nil {
 			return nil, err
