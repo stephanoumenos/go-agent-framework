@@ -229,6 +229,12 @@ func ResponseToJSON[In, Out any](finalNode Output[In, Out]) WorkflowOutput[Out] 
 }
 
 /* Ideas
+type Condition any
+
+func If[Out any](condition Condition, do func(WorkflowContext)) Output[Condition, Out]    {}
+func While[Out any](condition Condition, do func(WorkflowContext)) Output[Condition, Out] {}
+
+
 func FanOut[In, Out any](node Output[In, Out], fun func(NodeContext, In)) []Output[In, Out] {
 	return nil
 }
