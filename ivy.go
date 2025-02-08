@@ -3,10 +3,16 @@ package ivy
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
-	"sync"
 )
+
+type WorkflowFactory[In, Out any] struct {
+	resolver resolveWorkflow[In, Out]
+}
+
+func (w WorkflowFactory[In, Out]) New(in In) (Out, error) {
+	return w.resolver(in)
+}
 
 // WorkflowContext serves two purposes:
 // 1. Prevent users from calling functions outside llm.Suppervise.
@@ -15,58 +21,21 @@ type WorkflowContext struct {
 	NodeContext NodeContext
 }
 
-type HandlerFunc[In, OutputReq any] func(WorkflowContext, In) WorkflowOutput[OutputReq]
-type resolveWorkflow func(io.ReadCloser) (io.ReadCloser, error)
+type HandlerFunc[In, In2Out, Out any] func(WorkflowContext, In) Output[In2Out, Out]
+type resolveWorkflow[In, Out any] func(In) (Out, error)
 
 type WorkflowInput[Req any] NodeType[io.ReadCloser, Req]
-type WorkflowOutput[Req any] Output[Req, io.ReadCloser]
 
-var (
-	mu       sync.RWMutex
-	handlers = make(map[string]any)
-)
-
-type userHandler struct {
-	startNodeType any
-	handler       any
-}
-
-func Workflow[In, OutputReq any](route string, startNodeType NodeType[io.ReadCloser, In], handler HandlerFunc[In, OutputReq]) {
-	mu.Lock()
-	var resolve resolveWorkflow = func(req io.ReadCloser) (io.ReadCloser, error) {
-		start := startNodeType.Input(req)
-
-		var nCtx NodeContext
-		startResult, err := start.Get(nCtx)
-		if err != nil {
-			return nil, err
-		}
-
-		ctx := WorkflowContext{NodeContext: nCtx}
-		resultNode := handler(ctx, startResult.Output)
-		result, err := resultNode.Get(nCtx)
-		if err != nil {
-			return nil, err
-		}
-
-		return result.Output, nil
+func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out]) WorkflowFactory[In, Out] {
+	return WorkflowFactory[In, Out]{
+		resolver: func(in In) (Out, error) {
+			var nCtx NodeContext
+			ctx := WorkflowContext{NodeContext: nCtx}
+			resultNode := handler(ctx, in)
+			result, err := resultNode.Get(nCtx)
+			return result.Output, err
+		},
 	}
-	handlers[route] = resolve
-	mu.Unlock()
-}
-
-func RunWorkflow(route string, req io.ReadCloser) (io.ReadCloser, error) {
-	mu.RLock()
-	routeHandler, ok := handlers[route]
-	mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("handler not found")
-	}
-	handler, ok := routeHandler.(resolveWorkflow)
-	if !ok {
-		return nil, fmt.Errorf("error getting handler")
-	}
-	return handler(req)
 }
 
 type NodeContext struct {
