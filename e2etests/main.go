@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"ivy"
-	"ivy/nodetypes/openai"
+	"heart"
+	"heart/nodetypes/openai"
 
 	goopenai "github.com/sashabaranov/go-openai"
 )
@@ -26,10 +26,10 @@ Your output must be structured in the JSON format specified by the provided sche
 
 var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
 
-func handleCarnism(ctx ivy.WorkflowContext, in goopenai.ChatCompletionRequest) ivy.Output[goopenai.ChatCompletionRequest, QuestionAnswer] {
+func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest) heart.Output[goopenai.ChatCompletionRequest, QuestionAnswer] {
 	threeQuestions := openai.StructuredOutput[VeganQuestions]("three-questions").Input(in)
 	answerToFirstQuestion := openai.StructuredOutput[QuestionAnswer]("first-question-answer").
-		FanIn(func(nc ivy.NodeContext) (goopenai.ChatCompletionRequest, error) {
+		FanIn(func(nc heart.NodeContext) (goopenai.ChatCompletionRequest, error) {
 			req := goopenai.ChatCompletionRequest{
 				Model:       "model/",
 				MaxTokens:   2048,
@@ -57,7 +57,8 @@ func handleCarnism(ctx ivy.WorkflowContext, in goopenai.ChatCompletionRequest) i
 }
 
 func main() {
-	carnistDebunkerWorkflowFactory := ivy.NewWorkflowFactory(handleCarnism)
+	// Idea: add WithConnector to get individual nodes.
+	carnistDebunkerWorkflowFactory := heart.NewWorkflowFactory(handleCarnism)
 
 	answer, err := carnistDebunkerWorkflowFactory.New(goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{

@@ -1,8 +1,6 @@
-package ivy
+package heart
 
 import (
-	"bytes"
-	"encoding/json"
 	"io"
 )
 
@@ -21,6 +19,17 @@ type WorkflowContext struct {
 	NodeContext NodeContext
 }
 
+type NodeContext struct {
+	m map[nodeKey]nodeState
+}
+
+type nodeKey struct {
+	nodeID   NodeID
+	nodeType NodeTypeID
+}
+
+type nodeStatus string
+
 type HandlerFunc[In, In2Out, Out any] func(WorkflowContext, In) Output[In2Out, Out]
 type resolveWorkflow[In, Out any] func(In) (Out, error)
 
@@ -37,17 +46,6 @@ func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out
 		},
 	}
 }
-
-type NodeContext struct {
-	m map[nodeKey]nodeState
-}
-
-type nodeKey struct {
-	nodeID   NodeID
-	nodeType NodeTypeID
-}
-
-type nodeStatus string
 
 const (
 	nodeStatusPending nodeStatus = "pending"
@@ -90,6 +88,9 @@ func (o *outputFromFanin[In, Out]) Get(nc NodeContext) (Result[In, Out], error) 
 		err error
 	)
 	r.Input, err = o.fun(nc)
+	if err != nil {
+		return r, err
+	}
 	r.Output, err = o.d.define(nc, r.Input).Get(nc)
 	return r, err
 }
@@ -163,37 +164,6 @@ func Transform[In, Out, TOut any](nodeID NodeID, node Output[In, Out], fun func(
 	}).FanIn(func(nc NodeContext) (Out, error) {
 		out, err := node.Get(nc)
 		return out.Output, err
-	})
-}
-
-func Request[In any](fun func(io.ReadCloser) (In, error)) NodeType[io.ReadCloser, In] {
-	return mapperNodeType("request", fun)
-}
-
-func RequestFromJSON[In any]() NodeType[io.ReadCloser, In] {
-	return mapperNodeType("request", func(req io.ReadCloser) (In, error) {
-		var in In
-		if err := json.NewDecoder(req).Decode(&in); err != nil {
-			return in, err
-		}
-		return in, nil
-	})
-}
-
-func Response[In, Out any](finalNode Output[In, Out], fun func(Out) (io.ReadCloser, error)) WorkflowOutput[Out] {
-	return Transform("response", finalNode, fun)
-}
-
-func ResponseToJSON[In, Out any](finalNode Output[In, Out]) WorkflowOutput[Out] {
-	return mapperNodeType("response", func(out Out) (io.ReadCloser, error) {
-		buf := new(bytes.Buffer)
-		if err := json.NewEncoder(buf).Encode(out); err != nil {
-			return nil, err
-		}
-		return io.NopCloser(buf), nil
-	}).FanIn(func(nc NodeContext) (Out, error) {
-		response, err := finalNode.Get(nc)
-		return response.Output, err
 	})
 }
 

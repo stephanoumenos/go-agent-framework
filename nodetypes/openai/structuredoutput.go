@@ -3,17 +3,17 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	"ivy"
+	"heart"
 	"net/http"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
-const nodeTypeID ivy.NodeTypeID = "openai:structured-output"
+const nodeTypeID heart.NodeTypeID = "openai:structured-output"
 
-func StructuredOutput[Out any](nodeID ivy.NodeID) ivy.NodeType[openai.ChatCompletionRequest, Out] {
-	return ivy.DefineNodeType(nodeID, nodeTypeID, func(in openai.ChatCompletionRequest) ivy.Definer[openai.ChatCompletionRequest, Out] {
+func StructuredOutput[Out any](nodeID heart.NodeID) heart.NodeType[openai.ChatCompletionRequest, Out] {
+	return heart.DefineNodeType(nodeID, nodeTypeID, func(in openai.ChatCompletionRequest) heart.Definer[openai.ChatCompletionRequest, Out] {
 		return &structuredOutputDefinition[Out]{in}
 	})
 }
@@ -22,7 +22,7 @@ type structuredOutputDefinition[Out any] struct {
 	in openai.ChatCompletionRequest
 }
 
-func (s *structuredOutputDefinition[Out]) Define() ivy.NodeResolver[Out] {
+func (s *structuredOutputDefinition[Out]) Define() heart.NodeResolver[Out] {
 	return &structuredOutput[Out]{in: s.in}
 }
 
@@ -30,7 +30,7 @@ type structuredOutput[Out any] struct {
 	in openai.ChatCompletionRequest
 }
 
-func (s *structuredOutput[Out]) Get(ivy.NodeContext) (o Out, err error) {
+func (s *structuredOutput[Out]) Get(heart.NodeContext) (o Out, err error) {
 	// Add schema to the input
 	schema, err := jsonschema.GenerateSchemaForType(o)
 	if err != nil {
