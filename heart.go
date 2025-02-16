@@ -1,8 +1,42 @@
 package heart
 
 import (
+	"context"
 	"io"
 )
+
+// Reasoning to group inits:
+// To group inits we could use something like:
+// map[node_type] -> InitParams{}
+// And then we could also expose node groups
+// map[{n0,n1,...,nn}] -> InitParams{}
+// How could we implement such a thing? I.e., if ni in {n0,n1,nn} we assign the same init?
+// Easy approach: just add one key per node and all values can be the same pointer
+// But then we use o(n) space.
+// Alternatively we could do:
+// map[node_group_id] -> struct{InitParams{}, []{n0,n1,...,nn}}
+// That would be really cool because we can override the init for n0,n1,...,etc.
+// So the default InitParams is provided, but if the user also specifies n0,n1,...,nn
+// then we prioritize that.
+type GroupInit[InitParams any] struct {
+	params InitParams
+	// Unfortunately we cannot strong type nodetypes here because NodeType is generic and they might have different input output
+	nodeTypes map[NodeTypeID]struct{}
+}
+
+type Init[InitParams any] struct {
+	params     InitParams
+	nodeTypeID NodeTypeID
+}
+
+type nodeInits struct {
+	nodeTypeInits map[NodeTypeID]any
+	groupInits    map[NodeTypeID]any
+}
+
+type ContextClient[Client any] interface {
+	Provide(parent context.Context, c Client) context.Context
+}
 
 type WorkflowFactory[In, Out any] struct {
 	resolver resolveWorkflow[In, Out]

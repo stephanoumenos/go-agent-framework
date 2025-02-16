@@ -58,7 +58,9 @@ func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest)
 
 func main() {
 	// Idea: add WithConnector to get individual nodes.
-	carnistDebunkerWorkflowFactory := heart.NewWorkflowFactory(handleCarnism)
+
+	openai.
+		carnistDebunkerWorkflowFactory := heart.NewWorkflowFactory(handleCarnism)
 
 	answer, err := carnistDebunkerWorkflowFactory.New(goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{
