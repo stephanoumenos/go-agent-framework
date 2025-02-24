@@ -1,42 +1,8 @@
 package heart
 
 import (
-	"context"
 	"io"
 )
-
-// Reasoning to group inits:
-// To group inits we could use something like:
-// map[node_type] -> InitParams{}
-// And then we could also expose node groups
-// map[{n0,n1,...,nn}] -> InitParams{}
-// How could we implement such a thing? I.e., if ni in {n0,n1,nn} we assign the same init?
-// Easy approach: just add one key per node and all values can be the same pointer
-// But then we use o(n) space.
-// Alternatively we could do:
-// map[node_group_id] -> struct{InitParams{}, []{n0,n1,...,nn}}
-// That would be really cool because we can override the init for n0,n1,...,etc.
-// So the default InitParams is provided, but if the user also specifies n0,n1,...,nn
-// then we prioritize that.
-type GroupInit[InitParams any] struct {
-	params InitParams
-	// Unfortunately we cannot strong type nodetypes here because NodeType is generic and they might have different input output
-	nodeTypes map[NodeTypeID]struct{}
-}
-
-type Init[InitParams any] struct {
-	params     InitParams
-	nodeTypeID NodeTypeID
-}
-
-type nodeInits struct {
-	nodeTypeInits map[NodeTypeID]any
-	groupInits    map[NodeTypeID]any
-}
-
-type ContextClient[Client any] interface {
-	Provide(parent context.Context, c Client) context.Context
-}
 
 type WorkflowFactory[In, Out any] struct {
 	resolver resolveWorkflow[In, Out]
@@ -93,6 +59,7 @@ func (nc *NodeContext) defineNode(n *nodeKey) {
 }
 
 type NodeType[In, Out any] interface {
+	heart()
 	FanIn(func(NodeContext) (In, error)) Output[In, Out]
 	Input(In) Output[In, Out]
 }
@@ -100,7 +67,6 @@ type NodeType[In, Out any] interface {
 type nodeType[In, Out any] func(WorkflowContext, In) definition[In, Out]
 
 // Node implementations must implement this interface to be used in the supervisor.
-// N.B.: it's unexported to prevent users from implementing it directly.
 type Definer[In, Out any] interface {
 	Define() NodeResolver[Out]
 }
@@ -154,6 +120,10 @@ func (d *definition[In, Out]) Input(in In) Output[In, Out] {
 		in: in,
 	}
 }
+
+var _ NodeType[any, any] = (*definition[any, any])(nil)
+
+func (d *definition[In, Out]) heart() {}
 
 type nodeResolver[Out any] struct {
 	ctx                  NodeContext

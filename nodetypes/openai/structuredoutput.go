@@ -4,30 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"heart"
-	"net/http"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
-const nodeTypeID heart.NodeTypeID = "openai:structured-output"
+const structuredOutputNodeTypeID heart.NodeTypeID = "openai:structured-output"
 
 func StructuredOutput[Out any](nodeID heart.NodeID) heart.NodeType[openai.ChatCompletionRequest, Out] {
-	return heart.DefineNodeType(nodeID, nodeTypeID, func(in openai.ChatCompletionRequest) heart.Definer[openai.ChatCompletionRequest, Out] {
-		return &structuredOutputDefinition[Out]{in}
+	return heart.DefineNodeType(nodeID, structuredOutputNodeTypeID, func(in openai.ChatCompletionRequest) heart.Definer[openai.ChatCompletionRequest, Out] {
+		return &structuredOutputDefinition[Out]{in, nil}
 	})
 }
 
 type structuredOutputDefinition[Out any] struct {
-	in openai.ChatCompletionRequest
+	in     openai.ChatCompletionRequest
+	client *openai.Client
 }
 
 func (s *structuredOutputDefinition[Out]) Define() heart.NodeResolver[Out] {
-	return &structuredOutput[Out]{in: s.in}
+	return &structuredOutput[Out]{in: s.in, client: s.client}
+}
+
+func (s *structuredOutputDefinition[Out]) DependencyInject(client *openai.Client) {
+	s.client = client
 }
 
 type structuredOutput[Out any] struct {
-	in openai.ChatCompletionRequest
+	in     openai.ChatCompletionRequest
+	client *openai.Client
 }
 
 func (s *structuredOutput[Out]) Get(heart.NodeContext) (o Out, err error) {
@@ -44,13 +49,7 @@ func (s *structuredOutput[Out]) Get(heart.NodeContext) (o Out, err error) {
 			Strict: true,
 		},
 	}
-	client := openai.NewClientWithConfig(
-		openai.ClientConfig{
-			BaseURL:    "http://localhost:8000/v1",
-			HTTPClient: &http.Client{},
-		},
-	)
-	chat, err := client.CreateChatCompletion(context.TODO(), s.in)
+	chat, err := s.client.CreateChatCompletion(context.TODO(), s.in)
 	if err != nil {
 		return o, err
 	}

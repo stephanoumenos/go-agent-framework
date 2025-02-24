@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"heart"
 	"heart/nodetypes/openai"
+	"net/http"
 
 	goopenai "github.com/sashabaranov/go-openai"
 )
@@ -58,9 +59,13 @@ func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest)
 
 func main() {
 	// Idea: add WithConnector to get individual nodes.
+	client := goopenai.NewClientWithConfig(goopenai.ClientConfig{
+		BaseURL:    "http://localhost:7999/v1",
+		HTTPClient: &http.Client{},
+	})
+	openai.Init(client)
 
-	openai.
-		carnistDebunkerWorkflowFactory := heart.NewWorkflowFactory(handleCarnism)
+	carnistDebunkerWorkflowFactory := heart.NewWorkflowFactory(handleCarnism)
 
 	answer, err := carnistDebunkerWorkflowFactory.New(goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{
