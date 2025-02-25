@@ -66,9 +66,13 @@ type NodeType[In, Out any] interface {
 
 type nodeType[In, Out any] func(WorkflowContext, In) definition[In, Out]
 
+type NodeInitializer interface {
+	ID() NodeTypeID
+}
+
 // Node implementations must implement this interface to be used in the supervisor.
 type Definer[In, Out any] interface {
-	Define() NodeResolver[Out]
+	Define() (NodeInitializer, NodeResolver[Out])
 }
 
 type definition[In, Out any] struct {
@@ -145,11 +149,16 @@ func (n definition[In, Out]) define(ctx NodeContext, req In) NodeResolver[Out] {
 type NodeID string
 type NodeTypeID string
 
-func DefineNodeType[In, Out any](nodeID NodeID, nodeTypeID NodeTypeID, fun func(In) Definer[In, Out]) NodeType[In, Out] {
+func DefineNodeType[In, Out any](nodeID NodeID, nodeTypeID NodeTypeID, definer Definer[In, Out]) NodeType[In, Out] {
 	return &definition[In, Out]{id: nodeID, fun: fun, typeID: nodeTypeID}
 }
 
+func DefineNodeResolver[In, Out, Params any](new func(Params)) NodeResolver[Out] {
+
+}
+
 type NodeResolver[Out any] interface {
+	heart()
 	Get(NodeContext) (Out, error)
 }
 

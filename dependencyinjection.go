@@ -13,20 +13,44 @@ var (
 	errDuplicateDependency = errors.New("duplicate dependency") // TODO: move to errors subpackage and export
 )
 
-func DependencyInject[Dep any](dep Dep, nodes ...NodeTypeID) error {
+type NodeConstructor interface {
+	nodes() []NodeTypeID
+	construct() any
+}
+
+type DependencyInjectable[Dep any] interface {
+	NodeInitializer
+	DependencyInject(Dep)
+}
+
+func DefineNodeConstructor[Params, Dep any](params Params, new func(Params) Dep, nodes ...DependencyInjectable[Dep]) NodeConstructor {
+	return nil
+}
+
+func DependencyInject(constructors ...NodeConstructor) error {
+	// TODO: Make concurrent
+	for _, c := range constructors {
+		if err := inject(c.construct(), c.nodes()...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inject(dep any, nodes ...NodeTypeID) error {
 	dependenciesMtx.Lock()
 	defer dependenciesMtx.Unlock()
 	dependencies = append(dependencies, dep)
 	for i, node := range nodes {
 		if _, ok := nodeDependencies[node]; ok {
 			// Clean up what we changed first
-			dependencies = dependencies[:len(dependencies)-2] // Pop last element to return the error
+			dependencies = dependencies[:len(dependencies)-1] // Pop last element to restore initial state
 			for range i {
 				delete(nodeDependencies, node)
 			}
 			return fmt.Errorf("dependency already declared for node %q: %w", node, errDuplicateDependency)
 		}
-		nodeDependencies[node] = &dependencies[len(dependencies)-2]
+		nodeDependencies[node] = &dependencies[len(dependencies)-1]
 	}
 	return nil
 }

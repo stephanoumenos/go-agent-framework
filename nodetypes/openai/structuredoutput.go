@@ -12,21 +12,24 @@ import (
 const structuredOutputNodeTypeID heart.NodeTypeID = "openai:structured-output"
 
 func StructuredOutput[Out any](nodeID heart.NodeID) heart.NodeType[openai.ChatCompletionRequest, Out] {
-	return heart.DefineNodeType(nodeID, structuredOutputNodeTypeID, func(in openai.ChatCompletionRequest) heart.Definer[openai.ChatCompletionRequest, Out] {
-		return &structuredOutputDefinition[Out]{in, nil}
-	})
+	return heart.DefineNodeType[openai.ChatCompletionRequest, Out](nodeID, structuredOutputNodeTypeID, &structuredOutputDefiner[Out]{})
 }
 
-type structuredOutputDefinition[Out any] struct {
-	in     openai.ChatCompletionRequest
+type structuredOutputDefiner[Out any] struct{}
+
+func (s *structuredOutputDefiner[Out]) Define() (heart.NodeInitializer, heart.NodeResolver[Out]) {
+	return &structuredOutputInitializer{}, &structuredOutput[Out]{}
+}
+
+type structuredOutputInitializer struct {
 	client *openai.Client
 }
 
-func (s *structuredOutputDefinition[Out]) Define() heart.NodeResolver[Out] {
-	return &structuredOutput[Out]{in: s.in, client: s.client}
+func (s *structuredOutputInitializer) ID() heart.NodeTypeID {
+	return structuredOutputNodeTypeID
 }
 
-func (s *structuredOutputDefinition[Out]) DependencyInject(client *openai.Client) {
+func (s *structuredOutputInitializer) DependencyInject(client *openai.Client) {
 	s.client = client
 }
 
