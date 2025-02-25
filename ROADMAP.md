@@ -1,8 +1,12 @@
 # Roadmap
-- [X] Fix running the project
+
+- [x] Fix running the project
 - [ ] Add engine/node scheduler
-- [ ] Add client propagations with the contexts (in progress)
-- [ ] Add MCP support
-- [ ] Add persistance (MVP: in-memory, later on to a database)
-- [ ] Add Chain of Thought
+- [x] Add client propagations with the contexts (in progress)
+- [ ] Improve openai API nodes
+- [ ] Add persistance (MVP: in-memory, later onto a database)
+- [ ] Add middleware support
+    - [ ] Add tools
+    - [ ] Add Chain of Thought
 - [ ] Add tests
+- [ o ] ~~Add MCP support~~ Won't do, too early/unsupported
