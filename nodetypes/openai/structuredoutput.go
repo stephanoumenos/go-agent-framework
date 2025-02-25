@@ -11,14 +11,8 @@ import (
 
 const structuredOutputNodeTypeID heart.NodeTypeID = "openai:structured-output"
 
-func StructuredOutput[Out any](nodeID heart.NodeID) heart.NodeType[openai.ChatCompletionRequest, Out] {
-	return heart.DefineNodeType[openai.ChatCompletionRequest, Out](nodeID, structuredOutputNodeTypeID, &structuredOutputDefiner[Out]{})
-}
-
-type structuredOutputDefiner[Out any] struct{}
-
-func (s *structuredOutputDefiner[Out]) Define() (heart.NodeInitializer, heart.NodeResolver[Out]) {
-	return &structuredOutputInitializer{}, &structuredOutput[Out]{}
+func StructuredOutput[Out any](nodeID heart.NodeID) heart.NodeBuilder[openai.ChatCompletionRequest, Out] {
+	return heart.DefineNodeBuilder[openai.ChatCompletionRequest, Out](nodeID, &structuredOutput[Out]{})
 }
 
 type structuredOutputInitializer struct {
@@ -34,17 +28,20 @@ func (s *structuredOutputInitializer) DependencyInject(client *openai.Client) {
 }
 
 type structuredOutput[Out any] struct {
-	in     openai.ChatCompletionRequest
-	client *openai.Client
+	*structuredOutputInitializer
 }
 
-func (s *structuredOutput[Out]) Get(heart.NodeContext) (o Out, err error) {
+func (s *structuredOutput[Out]) Init() heart.NodeInitializer {
+	return s.structuredOutputInitializer
+}
+
+func (s *structuredOutput[Out]) Get(ctx heart.NodeContext, in openai.ChatCompletionRequest) (o Out, err error) {
 	// Add schema to the input
 	schema, err := jsonschema.GenerateSchemaForType(o)
 	if err != nil {
 		return o, err
 	}
-	s.in.ResponseFormat = &openai.ChatCompletionResponseFormat{
+	in.ResponseFormat = &openai.ChatCompletionResponseFormat{
 		Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
 		JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
 			Name:   "output",
@@ -52,7 +49,7 @@ func (s *structuredOutput[Out]) Get(heart.NodeContext) (o Out, err error) {
 			Strict: true,
 		},
 	}
-	chat, err := s.client.CreateChatCompletion(context.TODO(), s.in)
+	chat, err := s.client.CreateChatCompletion(context.TODO(), in)
 	if err != nil {
 		return o, err
 	}

@@ -13,9 +13,23 @@ var (
 	errDuplicateDependency = errors.New("duplicate dependency") // TODO: move to errors subpackage and export
 )
 
-type NodeConstructor interface {
+type DependencyInjector interface {
 	nodes() []NodeTypeID
 	construct() any
+}
+
+type dependencyInjector[Params, Dep any] struct {
+	params Params
+	_nodes []NodeTypeID
+	new    func(Params) Dep
+}
+
+func (d dependencyInjector[Params, Dep]) nodes() []NodeTypeID {
+	return d._nodes
+}
+
+func (d dependencyInjector[Params, Dep]) construct() any {
+	return d.new(d.params)
 }
 
 type DependencyInjectable[Dep any] interface {
@@ -23,11 +37,17 @@ type DependencyInjectable[Dep any] interface {
 	DependencyInject(Dep)
 }
 
-func DefineNodeConstructor[Params, Dep any](params Params, new func(Params) Dep, nodes ...DependencyInjectable[Dep]) NodeConstructor {
-	return nil
+func NodesDependencyInject[Params, Dep any](params Params, new func(Params) Dep, nodes ...DependencyInjectable[Dep]) DependencyInjector {
+	d := dependencyInjector[Params, Dep]{params: params, new: new}
+	d._nodes = make([]NodeTypeID, 0, len(nodes))
+	for _, node := range nodes {
+		d._nodes = append(d._nodes, node.ID())
+	}
+
+	return &d
 }
 
-func DependencyInject(constructors ...NodeConstructor) error {
+func Dependency(constructors ...DependencyInjector) error {
 	// TODO: Make concurrent
 	for _, c := range constructors {
 		if err := inject(c.construct(), c.nodes()...); err != nil {

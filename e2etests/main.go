@@ -63,7 +63,8 @@ func main() {
 		BaseURL:    "http://localhost:7999/v1",
 		HTTPClient: &http.Client{},
 	})
-	openai.Init(client)
+
+	heart.Dependency(openai.Inject(client))
 
 	carnistDebunkerWorkflowFactory := heart.NewWorkflowFactory(handleCarnism)
 

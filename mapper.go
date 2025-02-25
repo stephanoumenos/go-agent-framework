@@ -20,8 +20,8 @@ type mapperDefinition[In, Out any] struct {
 	input In
 }
 
-func mapperNodeType[In, Out any](nodeID NodeID, mapper func(In) (Out, error)) NodeType[In, Out] {
-	return DefineNodeType(nodeID, nodeTypeID, func(req In) Definer[In, Out] {
+func mapperNodeType[In, Out any](nodeID NodeID, mapper func(In) (Out, error)) NodeBuilder[In, Out] {
+	return DefineNodeBuilder(nodeID, nodeTypeID, func(req In) Definer[In, Out] {
 		return &mapperDefinition[In, Out]{fun: mapper, input: req}
 	})
 }

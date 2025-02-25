@@ -33,7 +33,7 @@ type nodeStatus string
 type HandlerFunc[In, In2Out, Out any] func(WorkflowContext, In) Output[In2Out, Out]
 type resolveWorkflow[In, Out any] func(In) (Out, error)
 
-type WorkflowInput[Req any] NodeType[io.ReadCloser, Req]
+type WorkflowInput[Req any] NodeBuilder[io.ReadCloser, Req]
 
 func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out]) WorkflowFactory[In, Out] {
 	return WorkflowFactory[In, Out]{
@@ -58,7 +58,7 @@ type nodeState []struct{}
 func (nc *NodeContext) defineNode(n *nodeKey) {
 }
 
-type NodeType[In, Out any] interface {
+type NodeBuilder[In, Out any] interface {
 	heart()
 	FanIn(func(NodeContext) (In, error)) Output[In, Out]
 	Input(In) Output[In, Out]
@@ -70,23 +70,17 @@ type NodeInitializer interface {
 	ID() NodeTypeID
 }
 
-// Node implementations must implement this interface to be used in the supervisor.
-type Definer[In, Out any] interface {
-	Define() (NodeInitializer, NodeResolver[Out])
-}
-
 type definition[In, Out any] struct {
-	id     NodeID
-	fun    func(In) Definer[In, Out]
-	typeID NodeTypeID
+	id       NodeID
+	resolver NodeResolver[In, Out]
 }
 
-type outputFromFanin[In, Out any] struct {
+type outputFromFanIn[In, Out any] struct {
 	d   *definition[In, Out]
 	fun func(NodeContext) (In, error)
 }
 
-func (o *outputFromFanin[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
+func (o *outputFromFanIn[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
 	var (
 		r   Result[In, Out]
 		err error
@@ -95,7 +89,7 @@ func (o *outputFromFanin[In, Out]) Get(nc NodeContext) (Result[In, Out], error) 
 	if err != nil {
 		return r, err
 	}
-	r.Output, err = o.d.define(nc, r.Input).Get(nc)
+	r.Output, err = o.d.resolver.Get(nc, r.Input)
 	return r, err
 }
 
@@ -107,12 +101,12 @@ type outputFromInput[In, Out any] struct {
 func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
 	r := Result[In, Out]{Input: o.in}
 	var err error
-	r.Output, err = o.d.define(nc, o.in).Get(nc)
+	r.Output, err = o.d.resolver.Get(nc, o.in)
 	return r, err
 }
 
 func (d *definition[In, Out]) FanIn(fun func(NodeContext) (In, error)) Output[In, Out] {
-	return &outputFromFanin[In, Out]{
+	return &outputFromFanIn[In, Out]{
 		d:   d,
 		fun: fun,
 	}
@@ -125,41 +119,20 @@ func (d *definition[In, Out]) Input(in In) Output[In, Out] {
 	}
 }
 
-var _ NodeType[any, any] = (*definition[any, any])(nil)
+var _ NodeBuilder[any, any] = (*definition[any, any])(nil)
 
 func (d *definition[In, Out]) heart() {}
-
-type nodeResolver[Out any] struct {
-	ctx                  NodeContext
-	nodeTypeNodeResolver NodeResolver[Out]
-}
-
-func (n *nodeResolver[Out]) Get(nc NodeContext) (Out, error) {
-	return n.nodeTypeNodeResolver.Get(nc)
-}
-
-func (n definition[In, Out]) define(ctx NodeContext, req In) NodeResolver[Out] {
-	ctx.defineNode(&nodeKey{
-		nodeID:   n.id,
-		nodeType: n.typeID,
-	})
-	return &nodeResolver[Out]{nodeTypeNodeResolver: n.fun(req).Define(), ctx: ctx}
-}
 
 type NodeID string
 type NodeTypeID string
 
-func DefineNodeType[In, Out any](nodeID NodeID, nodeTypeID NodeTypeID, definer Definer[In, Out]) NodeType[In, Out] {
-	return &definition[In, Out]{id: nodeID, fun: fun, typeID: nodeTypeID}
+func DefineNodeBuilder[In, Out any](nodeID NodeID, resolver NodeResolver[In, Out]) NodeBuilder[In, Out] {
+	return &definition[In, Out]{id: nodeID, resolver: resolver}
 }
 
-func DefineNodeResolver[In, Out, Params any](new func(Params)) NodeResolver[Out] {
-
-}
-
-type NodeResolver[Out any] interface {
-	heart()
-	Get(NodeContext) (Out, error)
+type NodeResolver[In, Out any] interface {
+	Init() NodeInitializer
+	Get(NodeContext, In) (Out, error)
 }
 
 type Result[In, Out any] struct {
