@@ -2,6 +2,8 @@ package heart
 
 import (
 	"io"
+	"sync"
+	"sync/atomic"
 )
 
 type WorkflowFactory[In, Out any] struct {
@@ -20,7 +22,8 @@ type WorkflowContext struct {
 }
 
 type NodeContext struct {
-	m map[nodeKey]nodeState
+	nodeCount *atomic.Int64
+	m         map[nodeKey]nodeState
 }
 
 type nodeKey struct {
@@ -38,7 +41,9 @@ type WorkflowInput[Req any] NodeBuilder[io.ReadCloser, Req]
 func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out]) WorkflowFactory[In, Out] {
 	return WorkflowFactory[In, Out]{
 		resolver: func(in In) (Out, error) {
-			var nCtx NodeContext
+			nCtx := NodeContext{
+				nodeCount: &atomic.Int64{},
+			}
 			ctx := WorkflowContext{NodeContext: nCtx}
 			resultNode := handler(ctx, in)
 			result, err := resultNode.Get(nCtx)
@@ -73,36 +78,39 @@ type NodeInitializer interface {
 type definition[In, Out any] struct {
 	id       NodeID
 	resolver NodeResolver[In, Out]
+	once     *sync.Once
+	idx      int64
 }
 
 type outputFromFanIn[In, Out any] struct {
 	d   *definition[In, Out]
 	fun func(NodeContext) (In, error)
+	Result[In, Out]
+	err error
 }
 
 func (o *outputFromFanIn[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
-	var (
-		r   Result[In, Out]
-		err error
-	)
-	r.Input, err = o.fun(nc)
-	if err != nil {
-		return r, err
-	}
-	r.Output, err = o.d.resolver.Get(nc, r.Input)
-	return r, err
+	o.d.once.Do(func() {
+		o.Result.Input, o.err = o.fun(nc)
+		if o.err != nil {
+			return
+		}
+		o.Result.Output, o.err = o.d.resolver.Get(nc, o.Result.Input)
+	})
+	return o.Result, o.err
 }
 
 type outputFromInput[In, Out any] struct {
-	d  *definition[In, Out]
-	in In
+	d *definition[In, Out]
+	Result[In, Out]
+	err error
 }
 
 func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
-	r := Result[In, Out]{Input: o.in}
-	var err error
-	r.Output, err = o.d.resolver.Get(nc, o.in)
-	return r, err
+	o.d.once.Do(func() {
+		o.Result.Output, o.err = o.d.resolver.Get(nc, o.Result.Input)
+	})
+	return o.Result, o.err
 }
 
 func (d *definition[In, Out]) FanIn(fun func(NodeContext) (In, error)) Output[In, Out] {
@@ -114,8 +122,8 @@ func (d *definition[In, Out]) FanIn(fun func(NodeContext) (In, error)) Output[In
 
 func (d *definition[In, Out]) Input(in In) Output[In, Out] {
 	return &outputFromInput[In, Out]{
-		d:  d,
-		in: in,
+		d:      d,
+		Result: Result[In, Out]{Input: in},
 	}
 }
 
@@ -126,8 +134,9 @@ func (d *definition[In, Out]) heart() {}
 type NodeID string
 type NodeTypeID string
 
-func DefineNodeBuilder[In, Out any](nodeID NodeID, resolver NodeResolver[In, Out]) NodeBuilder[In, Out] {
-	return &definition[In, Out]{id: nodeID, resolver: resolver}
+func DefineNodeBuilder[In, Out any](ctx WorkflowContext, nodeID NodeID, resolver NodeResolver[In, Out]) NodeBuilder[In, Out] {
+	idx := ctx.NodeContext.nodeCount.Add(1)
+	return &definition[In, Out]{id: nodeID, resolver: resolver, once: &sync.Once{}, idx: idx}
 }
 
 type NodeResolver[In, Out any] interface {

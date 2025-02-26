@@ -6,6 +6,11 @@ import (
 	"sync"
 )
 
+// TODO: It would also be very cool to dependency inject the whole node types
+// Then we can have only one living instance of NodeType in memory instead of many
+// Which is useful for high RPS applications (huge memory savings)
+// Leaving this as P1 as project is still in early phase.
+
 var (
 	dependencies           = make([]any, 0)
 	nodeDependencies       = make(map[NodeTypeID]*any)
@@ -47,7 +52,7 @@ func NodesDependencyInject[Params, Dep any](params Params, new func(Params) Dep,
 	return &d
 }
 
-func Dependency(constructors ...DependencyInjector) error {
+func Dependencies(constructors ...DependencyInjector) error {
 	// TODO: Make concurrent
 	for _, c := range constructors {
 		if err := inject(c.construct(), c.nodes()...); err != nil {
@@ -75,8 +80,15 @@ func inject(dep any, nodes ...NodeTypeID) error {
 	return nil
 }
 
-func provideDependency(nodeType any, nodeTypeID NodeTypeID) {
+func getNodeDependency(nodeTypeID NodeTypeID) (nodeDep *any, ok bool) {
 	// First we check if nodeType implements the dependency injection method
 	// Sadly we gotta use reflection here (TODO: find better way if Go allows it)
-
+	// t := reflect.TypeOf(nodeType)
+	dependenciesMtx.Lock()
+	defer dependenciesMtx.Unlock()
+	dep, ok := nodeDependencies[nodeTypeID]
+	if !ok {
+		return nil, false
+	}
+	return dep, true
 }

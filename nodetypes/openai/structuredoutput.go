@@ -11,8 +11,8 @@ import (
 
 const structuredOutputNodeTypeID heart.NodeTypeID = "openai:structured-output"
 
-func StructuredOutput[Out any](nodeID heart.NodeID) heart.NodeBuilder[openai.ChatCompletionRequest, Out] {
-	return heart.DefineNodeBuilder[openai.ChatCompletionRequest, Out](nodeID, &structuredOutput[Out]{})
+func StructuredOutput[Out any](ctx heart.WorkflowContext, nodeID heart.NodeID) heart.NodeBuilder[openai.ChatCompletionRequest, Out] {
+	return heart.DefineNodeBuilder[openai.ChatCompletionRequest, Out](ctx, nodeID, &structuredOutput[Out]{})
 }
 
 type structuredOutputInitializer struct {

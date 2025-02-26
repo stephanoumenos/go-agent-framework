@@ -28,8 +28,8 @@ Your output must be structured in the JSON format specified by the provided sche
 var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
 
 func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest) heart.Output[goopenai.ChatCompletionRequest, QuestionAnswer] {
-	threeQuestions := openai.StructuredOutput[VeganQuestions]("three-questions").Input(in)
-	answerToFirstQuestion := openai.StructuredOutput[QuestionAnswer]("first-question-answer").
+	threeQuestions := openai.StructuredOutput[VeganQuestions](ctx, "three-questions").Input(in)
+	answerToFirstQuestion := openai.StructuredOutput[QuestionAnswer](ctx, "first-question-answer").
 		FanIn(func(nc heart.NodeContext) (goopenai.ChatCompletionRequest, error) {
 			req := goopenai.ChatCompletionRequest{
 				Model:       "model/",
@@ -64,7 +64,7 @@ func main() {
 		HTTPClient: &http.Client{},
 	})
 
-	heart.Dependency(openai.Inject(client))
+	heart.Dependencies(openai.Inject(client))
 
 	carnistDebunkerWorkflowFactory := heart.NewWorkflowFactory(handleCarnism)
 
