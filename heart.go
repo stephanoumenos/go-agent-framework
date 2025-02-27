@@ -76,10 +76,11 @@ type NodeInitializer interface {
 }
 
 type definition[In, Out any] struct {
-	id       NodeID
-	resolver NodeResolver[In, Out]
-	once     *sync.Once
-	idx      int64
+	id          NodeID
+	initializer NodeInitializer
+	resolver    NodeResolver[In, Out]
+	once        *sync.Once
+	idx         int64
 }
 
 type outputFromFanIn[In, Out any] struct {
@@ -91,6 +92,7 @@ type outputFromFanIn[In, Out any] struct {
 
 func (o *outputFromFanIn[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
 	o.d.once.Do(func() {
+		dependencyInject(o.d.initializer, o.d.initializer.ID())
 		o.Result.Input, o.err = o.fun(nc)
 		if o.err != nil {
 			return
@@ -108,6 +110,7 @@ type outputFromInput[In, Out any] struct {
 
 func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
 	o.d.once.Do(func() {
+		dependencyInject(o.d.initializer, o.d.initializer.ID())
 		o.Result.Output, o.err = o.d.resolver.Get(nc, o.Result.Input)
 	})
 	return o.Result, o.err

@@ -3,6 +3,7 @@ package heart
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -12,10 +13,13 @@ import (
 // Leaving this as P1 as project is still in early phase.
 
 var (
-	dependencies           = make([]any, 0)
-	nodeDependencies       = make(map[NodeTypeID]*any)
-	dependenciesMtx        = sync.Mutex{}
-	errDuplicateDependency = errors.New("duplicate dependency") // TODO: move to errors subpackage and export
+	dependencies     = make([]any, 0)
+	nodeDependencies = make(map[NodeTypeID]any)
+	dependenciesMtx  = sync.Mutex{}
+	// TODO: move to errors subpackage and export
+	errDuplicateDependency  = errors.New("duplicate dependency")
+	errNoDependencyProvided = errors.New("no dependency provided")
+	errDependencyWrongType  = errors.New("dependency provided with wrong type")
 )
 
 type DependencyInjector interface {
@@ -55,18 +59,18 @@ func NodesDependencyInject[Params, Dep any](params Params, new func(Params) Dep,
 func Dependencies(constructors ...DependencyInjector) error {
 	// TODO: Make concurrent
 	for _, c := range constructors {
-		if err := inject(c.construct(), c.nodes()...); err != nil {
+		if err := storeDependency(c.construct(), c.nodes()...); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func inject(dep any, nodes ...NodeTypeID) error {
+func storeDependency(dep any, ids ...NodeTypeID) error {
 	dependenciesMtx.Lock()
 	defer dependenciesMtx.Unlock()
 	dependencies = append(dependencies, dep)
-	for i, node := range nodes {
+	for i, node := range ids {
 		if _, ok := nodeDependencies[node]; ok {
 			// Clean up what we changed first
 			dependencies = dependencies[:len(dependencies)-1] // Pop last element to restore initial state
@@ -75,20 +79,52 @@ func inject(dep any, nodes ...NodeTypeID) error {
 			}
 			return fmt.Errorf("dependency already declared for node %q: %w", node, errDuplicateDependency)
 		}
-		nodeDependencies[node] = &dependencies[len(dependencies)-1]
+		nodeDependencies[node] = dependencies[len(dependencies)-1]
 	}
 	return nil
 }
 
-func getNodeDependency(nodeTypeID NodeTypeID) (nodeDep *any, ok bool) {
+func getNodeDependency(id NodeTypeID) (nodeDep any, ok bool) {
 	// First we check if nodeType implements the dependency injection method
 	// Sadly we gotta use reflection here (TODO: find better way if Go allows it)
 	// t := reflect.TypeOf(nodeType)
 	dependenciesMtx.Lock()
 	defer dependenciesMtx.Unlock()
-	dep, ok := nodeDependencies[nodeTypeID]
+	dep, ok := nodeDependencies[id]
 	if !ok {
 		return nil, false
 	}
 	return dep, true
+}
+
+func dependencyInject(node any, id NodeTypeID) error {
+	userNode := reflect.ValueOf(node)
+	method := userNode.MethodByName("DependencyInject")
+	if !method.IsValid() {
+		return nil
+	}
+
+	methodType := method.Type()
+	if methodType.NumIn() != 1 || methodType.NumOut() != 0 {
+		// TODO: Maybe emit warn here
+		return nil
+	}
+
+	dep, ok := getNodeDependency(id)
+	if !ok {
+		// Dependency hasn't been initialized for this node type
+		// This is likely user error
+		return fmt.Errorf("no dependency provided for node type %q: %w", id, errDuplicateDependency)
+	}
+
+	depVal := reflect.ValueOf(dep)
+
+	expectedParamType := methodType.In(0)
+
+	if !depVal.Type().AssignableTo(expectedParamType) {
+		return fmt.Errorf("dependency with wrong type provided for node type: %q: %w", id, errDependencyWrongType)
+	}
+
+	method.Call([]reflect.Value{depVal})
+	return nil
 }
