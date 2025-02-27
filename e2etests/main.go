@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"heart"
 	"heart/nodetypes/openai"
-	"net/http"
+	"os"
 
 	goopenai "github.com/sashabaranov/go-openai"
 )
@@ -32,7 +32,7 @@ func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest)
 	answerToFirstQuestion := openai.StructuredOutput[QuestionAnswer](ctx, "first-question-answer").
 		FanIn(func(nc heart.NodeContext) (goopenai.ChatCompletionRequest, error) {
 			req := goopenai.ChatCompletionRequest{
-				Model:       "model/",
+				Model:       goopenai.GPT4oMini,
 				MaxTokens:   2048,
 				Temperature: 1.000000,
 			}
@@ -59,10 +59,8 @@ func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest)
 
 func main() {
 	// Idea: add WithConnector to get individual nodes.
-	client := goopenai.NewClientWithConfig(goopenai.ClientConfig{
-		BaseURL:    "http://localhost:7999/v1",
-		HTTPClient: &http.Client{},
-	})
+	authToken := os.Getenv("OPENAI_API_KEY")
+	client := goopenai.NewClient(authToken)
 
 	heart.Dependencies(openai.Inject(client))
 
@@ -73,7 +71,7 @@ func main() {
 			{Role: goopenai.ChatMessageRoleSystem},
 			{Content: carnistUserMsg, Role: goopenai.ChatMessageRoleUser},
 		},
-		Model:       "model/",
+		Model:       goopenai.GPT4oMini,
 		MaxTokens:   2048,
 		Temperature: 1.000000,
 	})

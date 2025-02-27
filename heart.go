@@ -23,15 +23,7 @@ type WorkflowContext struct {
 
 type NodeContext struct {
 	nodeCount *atomic.Int64
-	m         map[nodeKey]nodeState
 }
-
-type nodeKey struct {
-	nodeID   NodeID
-	nodeType NodeTypeID
-}
-
-type nodeStatus string
 
 type HandlerFunc[In, In2Out, Out any] func(WorkflowContext, In) Output[In2Out, Out]
 type resolveWorkflow[In, Out any] func(In) (Out, error)
@@ -52,24 +44,11 @@ func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out
 	}
 }
 
-const (
-	nodeStatusPending nodeStatus = "pending"
-	nodeStatusRunning nodeStatus = "running"
-	nodeStatusDone    nodeStatus = "done"
-)
-
-type nodeState []struct{}
-
-func (nc *NodeContext) defineNode(n *nodeKey) {
-}
-
 type NodeBuilder[In, Out any] interface {
 	heart()
 	FanIn(func(NodeContext) (In, error)) Output[In, Out]
 	Input(In) Output[In, Out]
 }
-
-type nodeType[In, Out any] func(WorkflowContext, In) definition[In, Out]
 
 type NodeInitializer interface {
 	ID() NodeTypeID
@@ -83,6 +62,11 @@ type definition[In, Out any] struct {
 	idx         int64
 }
 
+func (d *definition[In, Out]) init() {
+	d.initializer = d.resolver.Init()
+	dependencyInject(d.initializer, d.initializer.ID())
+}
+
 type outputFromFanIn[In, Out any] struct {
 	d   *definition[In, Out]
 	fun func(NodeContext) (In, error)
@@ -92,7 +76,7 @@ type outputFromFanIn[In, Out any] struct {
 
 func (o *outputFromFanIn[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
 	o.d.once.Do(func() {
-		dependencyInject(o.d.initializer, o.d.initializer.ID())
+		o.d.init()
 		o.Result.Input, o.err = o.fun(nc)
 		if o.err != nil {
 			return
@@ -110,7 +94,7 @@ type outputFromInput[In, Out any] struct {
 
 func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
 	o.d.once.Do(func() {
-		dependencyInject(o.d.initializer, o.d.initializer.ID())
+		o.d.init()
 		o.Result.Output, o.err = o.d.resolver.Get(nc, o.Result.Input)
 	})
 	return o.Result, o.err
@@ -156,6 +140,7 @@ type Output[In, Out any] interface {
 	Get(NodeContext) (Result[In, Out], error)
 }
 
+/*
 func Transform[In, Out, TOut any](nodeID NodeID, node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {
 	return mapperNodeType(nodeID, func(in Out) (TOut, error) {
 		return fun(in)
@@ -164,6 +149,7 @@ func Transform[In, Out, TOut any](nodeID NodeID, node Output[In, Out], fun func(
 		return out.Output, err
 	})
 }
+*/
 
 /* Ideas
 type Condition any

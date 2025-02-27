@@ -32,6 +32,7 @@ type structuredOutput[Out any] struct {
 }
 
 func (s *structuredOutput[Out]) Init() heart.NodeInitializer {
+	s.structuredOutputInitializer = &structuredOutputInitializer{}
 	return s.structuredOutputInitializer
 }
 

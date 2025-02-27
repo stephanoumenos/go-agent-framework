@@ -1,5 +1,7 @@
 package heart
 
+/*
+
 var (
 	_ NodeResolver[any] = (*mapper[any, any])(nil)
 )
@@ -29,3 +31,5 @@ func mapperNodeType[In, Out any](nodeID NodeID, mapper func(In) (Out, error)) No
 func (j *mapperDefinition[In, Out]) Define() NodeResolver[Out] {
 	return &mapper[In, Out]{mapper: j.fun, input: j.input}
 }
+
+*/
