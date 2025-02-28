@@ -28,7 +28,7 @@ type NodeContext struct {
 type HandlerFunc[In, In2Out, Out any] func(WorkflowContext, In) Output[In2Out, Out]
 type resolveWorkflow[In, Out any] func(In) (Out, error)
 
-type WorkflowInput[Req any] NodeBuilder[io.ReadCloser, Req]
+type WorkflowInput[Req any] NodeDefinition[io.ReadCloser, Req]
 
 func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out]) WorkflowFactory[In, Out] {
 	return WorkflowFactory[In, Out]{
@@ -44,7 +44,7 @@ func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out
 	}
 }
 
-type NodeBuilder[In, Out any] interface {
+type NodeDefinition[In, Out any] interface {
 	heart()
 	FanIn(func(NodeContext) (In, error)) Output[In, Out]
 	Input(In) Output[In, Out]
@@ -114,14 +114,14 @@ func (d *definition[In, Out]) Input(in In) Output[In, Out] {
 	}
 }
 
-var _ NodeBuilder[any, any] = (*definition[any, any])(nil)
+var _ NodeDefinition[any, any] = (*definition[any, any])(nil)
 
 func (d *definition[In, Out]) heart() {}
 
 type NodeID string
 type NodeTypeID string
 
-func DefineNodeBuilder[In, Out any](ctx WorkflowContext, nodeID NodeID, resolver NodeResolver[In, Out]) NodeBuilder[In, Out] {
+func DefineNode[In, Out any](ctx WorkflowContext, nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
 	idx := ctx.NodeContext.nodeCount.Add(1)
 	return &definition[In, Out]{id: nodeID, resolver: resolver, once: &sync.Once{}, idx: idx}
 }

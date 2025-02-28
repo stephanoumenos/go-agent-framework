@@ -9,10 +9,10 @@ import (
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
-const structuredOutputNodeTypeID heart.NodeTypeID = "openai:structured-output"
+const structuredOutputNodeTypeID heart.NodeTypeID = "openai:structuredOutput"
 
-func StructuredOutput[Out any](ctx heart.WorkflowContext, nodeID heart.NodeID) heart.NodeBuilder[openai.ChatCompletionRequest, Out] {
-	return heart.DefineNodeBuilder[openai.ChatCompletionRequest, Out](ctx, nodeID, &structuredOutput[Out]{})
+func StructuredOutput[Out any](ctx heart.WorkflowContext, nodeID heart.NodeID) heart.NodeDefinition[openai.ChatCompletionRequest, Out] {
+	return heart.DefineNode(ctx, nodeID, &structuredOutput[Out]{})
 }
 
 type structuredOutputInitializer struct {
