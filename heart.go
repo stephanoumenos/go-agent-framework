@@ -46,8 +46,8 @@ func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out
 
 type NodeDefinition[In, Out any] interface {
 	heart()
-	FanIn(func(NodeContext) (In, error)) Output[In, Out]
 	Input(In) Output[In, Out]
+	FanIn(func(NodeContext) (In, error)) Output[In, Out]
 }
 
 type NodeInitializer interface {

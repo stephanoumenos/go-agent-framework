@@ -3,7 +3,8 @@ package main
 import (
 	"fmt"
 	"heart"
-	"heart/nodetypes/openai"
+	"heart/nodes/openai"
+	openaimiddleware "heart/nodes/openai/middleware"
 	"os"
 
 	goopenai "github.com/sashabaranov/go-openai"
@@ -28,20 +29,25 @@ Your output must be structured in the JSON format specified by the provided sche
 var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
 
 func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest) heart.Output[goopenai.ChatCompletionRequest, QuestionAnswer] {
-	threeQuestions := openai.StructuredOutput[VeganQuestions](ctx, "three-questions").Input(in)
-	answerToFirstQuestion := openai.StructuredOutput[QuestionAnswer](ctx, "first-question-answer").
-		FanIn(func(nc heart.NodeContext) (goopenai.ChatCompletionRequest, error) {
-			req := goopenai.ChatCompletionRequest{
-				Model:       goopenai.GPT4oMini,
-				MaxTokens:   2048,
-				Temperature: 1.000000,
-			}
-			questions, err := threeQuestions.Get(nc)
-			if err != nil {
-				return req, err
-			}
+	threeQuestions := openaimiddleware.WithStructuredOutput(
+		openai.CreateChatCompletion(ctx, "three-questions"),
+		openaimiddleware.StructuredOutputStruct[VeganQuestions]{},
+	).Input(in)
 
-			req.Messages = []goopenai.ChatCompletionMessage{
+	answerToFirstQuestion := openaimiddleware.WithStructuredOutput(
+		openai.CreateChatCompletion(ctx, "first-question-answer"),
+		openaimiddleware.StructuredOutputStruct[QuestionAnswer]{},
+	).FanIn(func(nc heart.NodeContext) (req goopenai.ChatCompletionRequest, err error) {
+		questions, err := threeQuestions.Get(nc)
+		if err != nil {
+			return req, err
+		}
+
+		return goopenai.ChatCompletionRequest{
+			Model:       goopenai.GPT4oMini,
+			MaxTokens:   2048,
+			Temperature: 1.000000,
+			Messages: []goopenai.ChatCompletionMessage{
 				{
 					Content: "You are the best vegan activist ever. Please debunk this non-vegan argument.",
 					Role:    goopenai.ChatMessageRoleSystem,
@@ -50,9 +56,9 @@ func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest)
 					Content: questions.Output.CarnistArgumentOne,
 					Role:    goopenai.ChatMessageRoleUser,
 				},
-			}
-			return req, nil
-		})
+			},
+		}, nil
+	})
 
 	return answerToFirstQuestion
 }
