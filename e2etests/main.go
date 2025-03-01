@@ -29,14 +29,12 @@ Your output must be structured in the JSON format specified by the provided sche
 var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
 
 func handleCarnism(ctx heart.WorkflowContext, in goopenai.ChatCompletionRequest) heart.Output[goopenai.ChatCompletionRequest, QuestionAnswer] {
-	threeQuestions := openaimiddleware.WithStructuredOutput(
+	threeQuestions := openaimiddleware.WithStructuredOutput[VeganQuestions](
 		openai.CreateChatCompletion(ctx, "three-questions"),
-		openaimiddleware.StructuredOutputStruct[VeganQuestions]{},
 	).Input(in)
 
-	answerToFirstQuestion := openaimiddleware.WithStructuredOutput(
+	answerToFirstQuestion := openaimiddleware.WithStructuredOutput[QuestionAnswer](
 		openai.CreateChatCompletion(ctx, "first-question-answer"),
-		openaimiddleware.StructuredOutputStruct[QuestionAnswer]{},
 	).FanIn(func(nc heart.NodeContext) (req goopenai.ChatCompletionRequest, err error) {
 		questions, err := threeQuestions.Get(nc)
 		if err != nil {
@@ -82,9 +80,9 @@ func main() {
 		Temperature: 1.000000,
 	})
 	if err != nil {
-		fmt.Println("error runnign workflow: ", err)
+		fmt.Println("error running workflow: ", err)
 		return
 	}
 	fmt.Println("Success!")
-	fmt.Println(answer)
+	fmt.Println(answer.Answer)
 }

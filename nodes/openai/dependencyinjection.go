@@ -7,5 +7,5 @@ import (
 )
 
 func Inject(client *openai.Client) heart.DependencyInjector {
-	return heart.NodesDependencyInject(client, func(c *openai.Client) *openai.Client { return c }, &structuredOutputInitializer{})
+	return heart.NodesDependencyInject(client, func(c *openai.Client) *openai.Client { return c }, &createChatCompletionInitializer{})
 }

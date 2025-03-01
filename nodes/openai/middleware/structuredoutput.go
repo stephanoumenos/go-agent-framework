@@ -1,15 +1,51 @@
 package middleware
 
-import "heart"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"heart"
 
-// Dummy struct just to be able to infer the type.
-// It doesn't actually do anything.
-type StructuredOutputStruct[T any] struct{}
+	"github.com/sashabaranov/go-openai"
+	"github.com/sashabaranov/go-openai/jsonschema"
+)
 
-func WithStructuredOutput[In, Out, SOut any](next heart.NodeDefinition[In, Out], structuredOutputStruct StructuredOutputStruct[SOut]) heart.NodeDefinition[In, SOut] {
-	return heart.DefineMiddleware[In, Out, SOut](middleware, next)
+var errDuplicatedResponseFormat = errors.New("response format already provided")
+
+func WithStructuredOutput[StructuredOutputStruct any](next heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) heart.NodeDefinition[openai.ChatCompletionRequest, StructuredOutputStruct] {
+	return heart.DefineThinMiddleware(middleware[StructuredOutputStruct], next)
 }
 
-func middleware[In, Out, SOut any](in In, next heart.NodeDefinition[In, Out]) heart.Output[In, SOut] {
-	return nil
+func middleware[SOut any](ctx heart.NodeContext, in openai.ChatCompletionRequest, next heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (SOut, error) {
+	var sOut SOut
+
+	// TODO: Try this nil trick later to avoid memory allocation
+	// schema, err := jsonschema.GenerateSchemaForType((*SOut)(nil))
+
+	if in.ResponseFormat != nil {
+		return sOut, fmt.Errorf("error in openai structured output middleware: %w", errDuplicatedResponseFormat)
+	}
+
+	// Add schema to the input
+	schema, err := jsonschema.GenerateSchemaForType(sOut)
+	if err != nil {
+		return sOut, fmt.Errorf("error in openai structured output middleware: error generating schema: %w", err)
+	}
+
+	in.ResponseFormat = &openai.ChatCompletionResponseFormat{
+		Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+		JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+			Name:   "output",
+			Schema: schema,
+			Strict: true,
+		},
+	}
+
+	out, err := next.Input(in).Get(ctx)
+	if err != nil {
+		return sOut, fmt.Errorf("error in openai structured output middleware: error from ChatCompletionRequest node: %w", err)
+	}
+
+	err = json.Unmarshal([]byte(out.Output.Choices[0].Message.Content), &sOut)
+	return sOut, err
 }
