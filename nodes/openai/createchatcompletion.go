@@ -34,6 +34,6 @@ func (c *createChatCompletion) Init() heart.NodeInitializer {
 	return c.createChatCompletionInitializer
 }
 
-func (c *createChatCompletion) Get(ctx heart.NodeContext, in openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
-	return c.client.CreateChatCompletion(context.TODO(), in)
+func (c *createChatCompletion) Get(ctx context.Context, in openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+	return c.client.CreateChatCompletion(ctx, in)
 }

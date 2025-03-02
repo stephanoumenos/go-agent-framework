@@ -1,6 +1,7 @@
 package heart
 
 import (
+	"context"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ type WorkflowContext struct {
 
 type NodeContext struct {
 	nodeCount *atomic.Int64
+	ctx       context.Context
 }
 
 type HandlerFunc[In, In2Out, Out any] func(WorkflowContext, In) Output[In2Out, Out]
@@ -35,6 +37,7 @@ func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out
 		resolver: func(in In) (Out, error) {
 			nCtx := NodeContext{
 				nodeCount: &atomic.Int64{},
+				ctx:       context.Background(),
 			}
 			ctx := WorkflowContext{NodeContext: nCtx}
 			resultNode := handler(ctx, in)
@@ -81,7 +84,7 @@ func (o *outputFromFanIn[In, Out]) Get(nc NodeContext) (Result[In, Out], error) 
 		if o.err != nil {
 			return
 		}
-		o.Result.Output, o.err = o.d.resolver.Get(nc, o.Result.Input)
+		o.Result.Output, o.err = o.d.resolver.Get(nc.ctx, o.Result.Input)
 	})
 	return o.Result, o.err
 }
@@ -95,7 +98,7 @@ type outputFromInput[In, Out any] struct {
 func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
 	o.d.once.Do(func() {
 		o.d.init()
-		o.Result.Output, o.err = o.d.resolver.Get(nc, o.Result.Input)
+		o.Result.Output, o.err = o.d.resolver.Get(nc.ctx, o.Result.Input)
 	})
 	return o.Result, o.err
 }
@@ -128,7 +131,7 @@ func DefineNode[In, Out any](ctx WorkflowContext, nodeID NodeID, resolver NodeRe
 
 type NodeResolver[In, Out any] interface {
 	Init() NodeInitializer
-	Get(NodeContext, In) (Out, error)
+	Get(context.Context, In) (Out, error)
 }
 
 type Result[In, Out any] struct {
