@@ -15,19 +15,12 @@ func (w WorkflowFactory[In, Out]) New(in In) (Out, error) {
 	return w.resolver(in)
 }
 
-// WorkflowContext serves two purposes:
-// 1. Prevent users from calling functions outside llm.Suppervise.
-// 2. Lets us store variables with the state of the graph.
-type WorkflowContext struct {
-	NodeContext NodeContext
-}
-
-type NodeContext struct {
+type Context struct {
 	nodeCount *atomic.Int64
 	ctx       context.Context
 }
 
-type HandlerFunc[In, In2Out, Out any] func(WorkflowContext, In) Output[In2Out, Out]
+type HandlerFunc[In, In2Out, Out any] func(In) Output[In2Out, Out]
 type resolveWorkflow[In, Out any] func(In) (Out, error)
 
 type WorkflowInput[Req any] NodeDefinition[io.ReadCloser, Req]
@@ -35,12 +28,11 @@ type WorkflowInput[Req any] NodeDefinition[io.ReadCloser, Req]
 func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out]) WorkflowFactory[In, Out] {
 	return WorkflowFactory[In, Out]{
 		resolver: func(in In) (Out, error) {
-			nCtx := NodeContext{
+			nCtx := Context{
 				nodeCount: &atomic.Int64{},
 				ctx:       context.Background(),
 			}
-			ctx := WorkflowContext{NodeContext: nCtx}
-			resultNode := handler(ctx, in)
+			resultNode := handler(in)
 			result, err := resultNode.Get(nCtx)
 			return result.Output, err
 		},
@@ -50,7 +42,7 @@ func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out
 type NodeDefinition[In, Out any] interface {
 	heart()
 	Input(In) Output[In, Out]
-	FanIn(func(NodeContext) (In, error)) Output[In, Out]
+	FanIn(func(Context) (In, error)) Output[In, Out]
 }
 
 type NodeInitializer interface {
@@ -72,12 +64,12 @@ func (d *definition[In, Out]) init() {
 
 type outputFromFanIn[In, Out any] struct {
 	d   *definition[In, Out]
-	fun func(NodeContext) (In, error)
+	fun func(Context) (In, error)
 	Result[In, Out]
 	err error
 }
 
-func (o *outputFromFanIn[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
+func (o *outputFromFanIn[In, Out]) Get(nc Context) (Result[In, Out], error) {
 	o.d.once.Do(func() {
 		o.d.init()
 		o.Result.Input, o.err = o.fun(nc)
@@ -95,7 +87,7 @@ type outputFromInput[In, Out any] struct {
 	err error
 }
 
-func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) {
+func (o *outputFromInput[In, Out]) Get(nc Context) (Result[In, Out], error) {
 	o.d.once.Do(func() {
 		o.d.init()
 		o.Result.Output, o.err = o.d.resolver.Get(nc.ctx, o.Result.Input)
@@ -103,7 +95,7 @@ func (o *outputFromInput[In, Out]) Get(nc NodeContext) (Result[In, Out], error) 
 	return o.Result, o.err
 }
 
-func (d *definition[In, Out]) FanIn(fun func(NodeContext) (In, error)) Output[In, Out] {
+func (d *definition[In, Out]) FanIn(fun func(Context) (In, error)) Output[In, Out] {
 	return &outputFromFanIn[In, Out]{
 		d:   d,
 		fun: fun,
@@ -124,9 +116,8 @@ func (d *definition[In, Out]) heart() {}
 type NodeID string
 type NodeTypeID string
 
-func DefineNode[In, Out any](ctx WorkflowContext, nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
-	idx := ctx.NodeContext.nodeCount.Add(1)
-	return &definition[In, Out]{id: nodeID, resolver: resolver, once: &sync.Once{}, idx: idx}
+func DefineNode[In, Out any](nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
+	return &definition[In, Out]{id: nodeID, resolver: resolver, once: &sync.Once{}}
 }
 
 type NodeResolver[In, Out any] interface {
@@ -140,14 +131,14 @@ type Result[In, Out any] struct {
 }
 
 type Output[In, Out any] interface {
-	Get(NodeContext) (Result[In, Out], error)
+	Get(Context) (Result[In, Out], error)
 }
 
 /*
 func Transform[In, Out, TOut any](nodeID NodeID, node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {
 	return mapperNodeType(nodeID, func(in Out) (TOut, error) {
 		return fun(in)
-	}).FanIn(func(nc NodeContext) (Out, error) {
+	}).FanIn(func(nc Context) (Out, error) {
 		out, err := node.Get(nc)
 		return out.Output, err
 	})
@@ -161,7 +152,7 @@ func If[Out any](condition Condition, do func(WorkflowContext)) Output[Condition
 func While[Out any](condition Condition, do func(WorkflowContext)) Output[Condition, Out] {}
 
 
-func FanOut[In, Out any](node Output[In, Out], fun func(NodeContext, In)) []Output[In, Out] {
+func FanOut[In, Out any](node Output[In, Out], fun func(Context, In)) []Output[In, Out] {
 	return nil
 }
 

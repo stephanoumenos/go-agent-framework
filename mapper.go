@@ -13,7 +13,7 @@ type mapper[In, Out any] struct {
 	input  In
 }
 
-func (j *mapper[In, Out]) Get(NodeContext) (Out, error) {
+func (j *mapper[In, Out]) Get(Context) (Out, error) {
 	return j.mapper(j.input)
 }
 

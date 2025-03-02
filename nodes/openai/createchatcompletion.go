@@ -9,8 +9,8 @@ import (
 
 const createChatCompletionNodeTypeID heart.NodeTypeID = "openai:createChatCompletion"
 
-func CreateChatCompletion(ctx heart.WorkflowContext, nodeID heart.NodeID) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
-	return heart.DefineNode(ctx, nodeID, &createChatCompletion{})
+func CreateChatCompletion(nodeID heart.NodeID) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
+	return heart.DefineNode(nodeID, &createChatCompletion{})
 }
 
 type createChatCompletionInitializer struct {

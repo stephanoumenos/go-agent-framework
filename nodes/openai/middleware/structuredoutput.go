@@ -16,7 +16,7 @@ func WithStructuredOutput[StructuredOutputStruct any](next heart.NodeDefinition[
 	return heart.DefineThinMiddleware(middleware[StructuredOutputStruct], next)
 }
 
-func middleware[SOut any](ctx heart.NodeContext, in openai.ChatCompletionRequest, next heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (SOut, error) {
+func middleware[SOut any](ctx heart.Context, in openai.ChatCompletionRequest, next heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (SOut, error) {
 	var sOut SOut
 
 	// TODO: Try this nil trick later to avoid memory allocation
