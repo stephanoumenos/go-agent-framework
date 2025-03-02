@@ -114,7 +114,7 @@ func dependencyInject(node any, id NodeTypeID) error {
 	if !ok {
 		// Dependency hasn't been initialized for this node type
 		// This is likely user error
-		return fmt.Errorf("no dependency provided for node type %q: %w", id, errDuplicateDependency)
+		return fmt.Errorf("no dependency provided for node type %q: %w", id, errNoDependencyProvided)
 	}
 
 	depVal := reflect.ValueOf(dep)

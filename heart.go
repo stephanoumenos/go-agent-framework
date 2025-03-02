@@ -57,9 +57,9 @@ type definition[In, Out any] struct {
 	idx         int64
 }
 
-func (d *definition[In, Out]) init() {
+func (d *definition[In, Out]) init() error {
 	d.initializer = d.resolver.Init()
-	dependencyInject(d.initializer, d.initializer.ID())
+	return dependencyInject(d.initializer, d.initializer.ID())
 }
 
 type outputFromFanIn[In, Out any] struct {
@@ -71,7 +71,10 @@ type outputFromFanIn[In, Out any] struct {
 
 func (o *outputFromFanIn[In, Out]) Get(nc Context) (Result[In, Out], error) {
 	o.d.once.Do(func() {
-		o.d.init()
+		o.err = o.d.init()
+		if o.err != nil {
+			return
+		}
 		o.Result.Input, o.err = o.fun(nc)
 		if o.err != nil {
 			return
@@ -89,7 +92,10 @@ type outputFromInput[In, Out any] struct {
 
 func (o *outputFromInput[In, Out]) Get(nc Context) (Result[In, Out], error) {
 	o.d.once.Do(func() {
-		o.d.init()
+		o.err = o.d.init()
+		if o.err != nil {
+			return
+		}
 		o.Result.Output, o.err = o.d.resolver.Get(nc.ctx, o.Result.Input)
 	})
 	return o.Result, o.err
