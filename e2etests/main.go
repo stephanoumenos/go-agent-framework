@@ -31,7 +31,9 @@ var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors ha
 // TODO: Remove WorkflowContext from here
 func handleCarnism(in goopenai.ChatCompletionRequest) heart.Output[goopenai.ChatCompletionRequest, QuestionAnswer] {
 	threeQuestions := openaimiddleware.WithStructuredOutput[VeganQuestions](
-		openai.CreateChatCompletion("three-questions"),
+		openaimiddleware.WithTools(
+			openai.CreateChatCompletion("three-questions"),
+		),
 	).Input(in)
 
 	answerToFirstQuestion := openaimiddleware.WithStructuredOutput[QuestionAnswer](
@@ -73,7 +75,7 @@ func main() {
 
 	answer, err := carnistDebunkerWorkflowFactory.New(goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{
-			{Role: goopenai.ChatMessageRoleSystem},
+			{Content: systemMsg, Role: goopenai.ChatMessageRoleSystem},
 			{Content: carnistUserMsg, Role: goopenai.ChatMessageRoleUser},
 		},
 		Model:       goopenai.GPT4oMini,
