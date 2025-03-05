@@ -109,11 +109,11 @@ func toolsMiddleware(tools []Tool) func(heart.Context, openai.ChatCompletionRequ
 		}
 		ccr.Tools = openaiTools
 
-		resp, err := nd.Input(ccr).Get(ctx)
+		resp, err := nd.Input(heart.Into(ccr)).Out(ctx)
 		if err != nil {
 			return out, err
 		}
-		toolCalls := resp.Output.Choices[0].Message.ToolCalls
+		toolCalls := resp.Choices[0].Message.ToolCalls
 		toolsCalled := len(toolCalls)
 		// TODO: Add a few more checks here
 		for toolsCalled > 0 {
@@ -161,14 +161,14 @@ func toolsMiddleware(tools []Tool) func(heart.Context, openai.ChatCompletionRequ
 				})
 			}
 
-			resp, err := nd.Input(ccr).Get(ctx)
+			resp, err := nd.Input(heart.Into(ccr)).Out(ctx)
 			if err != nil {
 				return out, err
 			}
-			toolCalls = resp.Output.Choices[0].Message.ToolCalls
+			toolCalls = resp.Choices[0].Message.ToolCalls
 			toolsCalled = len(toolCalls)
 		}
 
-		return resp.Output, nil
+		return resp, nil
 	}
 }

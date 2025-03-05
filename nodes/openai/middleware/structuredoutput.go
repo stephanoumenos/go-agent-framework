@@ -41,11 +41,11 @@ func structuredOutputMiddleware[SOut any](ctx heart.Context, in openai.ChatCompl
 		},
 	}
 
-	out, err := next.Input(in).Get(ctx)
+	out, err := next.Input(heart.Into(in)).Out(ctx)
 	if err != nil {
 		return sOut, fmt.Errorf("error in openai structured output middleware: error from ChatCompletionRequest node: %w", err)
 	}
 
-	err = json.Unmarshal([]byte(out.Output.Choices[0].Message.Content), &sOut)
+	err = json.Unmarshal([]byte(out.Choices[0].Message.Content), &sOut)
 	return sOut, err
 }

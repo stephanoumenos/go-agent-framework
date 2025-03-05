@@ -20,7 +20,7 @@ type Context struct {
 	ctx       context.Context
 }
 
-type HandlerFunc[In, In2Out, Out any] func(In) Output[In2Out, Out]
+type HandlerFunc[In, In2Out, Out any] func(In) Noder[In2Out, Out]
 type resolveWorkflow[In, Out any] func(In) (Out, error)
 
 type WorkflowInput[Req any] NodeDefinition[io.ReadCloser, Req]
@@ -33,16 +33,25 @@ func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out
 				ctx:       context.Background(),
 			}
 			resultNode := handler(in)
-			result, err := resultNode.Get(nCtx)
-			return result.Output, err
+			out, err := resultNode.Out(nCtx)
+			return out, err
 		},
 	}
 }
 
 type NodeDefinition[In, Out any] interface {
 	heart()
-	Input(In) Output[In, Out]
-	FanIn(func(Context) (In, error)) Output[In, Out]
+	Input(Outputer[In]) Noder[In, Out]
+}
+
+type into[Out any] struct{ out Out }
+
+func (i *into[Out]) Out(Context) (Out, error) {
+	return i.out, nil
+}
+
+func Into[Out any](out Out) Outputer[Out] {
+	return &into[Out]{out}
 }
 
 type NodeInitializer interface {
@@ -62,56 +71,47 @@ func (d *definition[In, Out]) init() error {
 	return dependencyInject(d.initializer, d.initializer.ID())
 }
 
-type outputFromFanIn[In, Out any] struct {
-	d   *definition[In, Out]
-	fun func(Context) (In, error)
-	Result[In, Out]
-	err error
+type node[In, Out any] struct {
+	d     *definition[In, Out]
+	in    Outputer[In]
+	inOut InOut[In, Out]
+	err   error
 }
 
-func (o *outputFromFanIn[In, Out]) Get(nc Context) (Result[In, Out], error) {
+func (o *node[In, Out]) get(nc Context) {
 	o.d.once.Do(func() {
 		o.err = o.d.init()
 		if o.err != nil {
 			return
 		}
-		o.Result.Input, o.err = o.fun(nc)
+		o.inOut.In, o.err = o.in.Out(nc)
 		if o.err != nil {
 			return
 		}
-		o.Result.Output, o.err = o.d.resolver.Get(nc.ctx, o.Result.Input)
+		o.inOut.Out, o.err = o.d.resolver.Get(nc.ctx, o.inOut.In)
 	})
-	return o.Result, o.err
 }
 
-type outputFromInput[In, Out any] struct {
-	d *definition[In, Out]
-	Result[In, Out]
-	err error
+func (o *node[In, Out]) In(nc Context) (In, error) {
+	o.get(nc)
+	return o.inOut.In, o.err
 }
 
-func (o *outputFromInput[In, Out]) Get(nc Context) (Result[In, Out], error) {
-	o.d.once.Do(func() {
-		o.err = o.d.init()
-		if o.err != nil {
-			return
-		}
-		o.Result.Output, o.err = o.d.resolver.Get(nc.ctx, o.Result.Input)
-	})
-	return o.Result, o.err
+func (o *node[In, Out]) Out(nc Context) (Out, error) {
+	o.get(nc)
+	return o.inOut.Out, o.err
 }
 
-func (d *definition[In, Out]) FanIn(fun func(Context) (In, error)) Output[In, Out] {
-	return &outputFromFanIn[In, Out]{
-		d:   d,
-		fun: fun,
-	}
+func (o *node[In, Out]) InOut(nc Context) (InOut[In, Out], error) {
+	o.get(nc)
+	return o.inOut, o.err
 }
 
-func (d *definition[In, Out]) Input(in In) Output[In, Out] {
-	return &outputFromInput[In, Out]{
-		d:      d,
-		Result: Result[In, Out]{Input: in},
+func (d *definition[In, Out]) Input(in Outputer[In]) Noder[In, Out] {
+	return &node[In, Out]{
+		d:     d,
+		in:    in,
+		inOut: InOut[In, Out]{},
 	}
 }
 
@@ -131,13 +131,28 @@ type NodeResolver[In, Out any] interface {
 	Get(context.Context, In) (Out, error)
 }
 
-type Result[In, Out any] struct {
-	Input  In
-	Output Out
+type InOut[In, Out any] struct {
+	In  In
+	Out Out
 }
 
-type Output[In, Out any] interface {
-	Get(Context) (Result[In, Out], error)
+type Inputer[In any] interface {
+	In(Context) (In, error)
+}
+
+type Outputer[Out any] interface {
+	Out(Context) (Out, error)
+}
+
+type Noder[In, Out any] interface {
+	Inputer[In]
+	Outputer[Out]
+	InOut(Context) (InOut[In, Out], error)
+}
+
+func FanIn[Out any](func(Context) (Out, error)) Outputer[Out] {
+	// TODO: implement
+	return nil
 }
 
 /*

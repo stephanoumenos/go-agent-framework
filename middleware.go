@@ -10,36 +10,38 @@ type thinMiddlewareDefinition[In, Out, NewOut any] struct {
 }
 
 type thinMiddleware[In, Out any] struct {
-	Result[In, Out]
-	get func(Context)
-	err error
+	inOut InOut[In, Out]
+	get   func(Context)
+	err   error
 }
 
-func (l *thinMiddleware[In, Out]) Get(nc Context) (Result[In, Out], error) {
+func (l *thinMiddleware[In, Out]) InOut(nc Context) (InOut[In, Out], error) {
 	// TODO: only call get only
 	// Not too necessary for lightMiddleware but might make a difference for high RPS
 	l.get(nc)
-	return l.Result, l.err
+	return l.inOut, l.err
+}
+
+func (l *thinMiddleware[In, Out]) In(nc Context) (In, error) {
+	l.get(nc)
+	return l.inOut.In, l.err
+}
+
+func (l *thinMiddleware[In, Out]) Out(nc Context) (Out, error) {
+	l.get(nc)
+	return l.inOut.Out, l.err
 }
 
 func (m *thinMiddlewareDefinition[In, Out, NewOut]) heart() {}
 
-func (m *thinMiddlewareDefinition[In, Out, NewOut]) Input(in In) Output[In, NewOut] {
-	lm := &thinMiddleware[In, NewOut]{Result: Result[In, NewOut]{Input: in}}
+func (m *thinMiddlewareDefinition[In, Out, NewOut]) Input(in Outputer[In]) Noder[In, NewOut] {
+	lm := &thinMiddleware[In, NewOut]{inOut: InOut[In, NewOut]{}}
 	lm.get = func(nc Context) {
-		lm.Output, lm.err = m.middleware(nc, lm.Input, m.next)
-	}
-	return lm
-}
-
-func (m *thinMiddlewareDefinition[In, Out, NewOut]) FanIn(fun func(Context) (In, error)) Output[In, NewOut] {
-	lm := &thinMiddleware[In, NewOut]{}
-	lm.get = func(nc Context) {
-		lm.Input, lm.err = fun(nc)
+		lm.inOut.In, lm.err = in.Out(nc)
 		if lm.err != nil {
 			return
 		}
-		lm.Output, lm.err = m.middleware(nc, lm.Input, m.next)
+		lm.inOut.Out, lm.err = m.middleware(nc, lm.inOut.In, m.next)
 	}
 	return lm
 }
