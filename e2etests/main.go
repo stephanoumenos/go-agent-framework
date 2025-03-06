@@ -30,17 +30,10 @@ var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors ha
 
 func handleCarnism(in goopenai.ChatCompletionRequest) heart.Noder[goopenai.ChatCompletionRequest, QuestionAnswer] {
 	threeQuestions := openaimiddleware.WithStructuredOutput[VeganQuestions](
-		openaimiddleware.WithTools(
-			openai.CreateChatCompletion("three-questions"),
-		),
+		openai.CreateChatCompletion("three-questions"),
 	).Input(heart.Into(in))
 
-	firstQuestionRequest := heart.FanIn(func(ctx heart.Context) (req goopenai.ChatCompletionRequest, err error) {
-		questions, err := threeQuestions.Out(ctx)
-		if err != nil {
-			return req, err
-		}
-
+	firstQuestionRequest := heart.Transform(threeQuestions, func(questions VeganQuestions) (goopenai.ChatCompletionRequest, error) {
 		return goopenai.ChatCompletionRequest{
 			Model:       goopenai.GPT4oMini,
 			MaxTokens:   2048,
@@ -56,7 +49,6 @@ func handleCarnism(in goopenai.ChatCompletionRequest) heart.Noder[goopenai.ChatC
 				},
 			},
 		}, nil
-
 	})
 
 	answerToFirstQuestion := openaimiddleware.WithStructuredOutput[QuestionAnswer](

@@ -155,6 +155,29 @@ func FanIn[Out any](func(Context) (Out, error)) Outputer[Out] {
 	return nil
 }
 
+func Map[SIn ~[]In, In any, SOut ~[]Out, Out any](s Outputer[SIn], fun func(In) Outputer[Out]) Outputer[SOut] {
+	return nil
+}
+
+// TODO: Change to error outputer
+func ForEach[SIn ~[]In, In any](s Outputer[SIn], fun func(In) Outputer[struct{}]) Outputer[struct{}] {
+	return nil
+}
+
+func Filter[SIn ~[]In, In any](s Outputer[SIn], fun func(In) Outputer[bool]) Outputer[SIn] {
+	return nil
+}
+
+func Transform[In, Out any](Outputer[In], func(In) (Out, error)) Outputer[Out] {
+	return nil
+}
+
+type connector[Out any] struct{}
+
+func (c *connector[Out]) Connect(Outputer[Out]) {}
+
+func UseConnector[Out any]() *connector[Out] { return nil }
+
 /*
 func Transform[In, Out, TOut any](nodeID NodeID, node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {
 	return mapperNodeType(nodeID, func(in Out) (TOut, error) {
