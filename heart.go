@@ -2,46 +2,12 @@ package heart
 
 import (
 	"context"
-	"io"
 	"sync"
-	"sync/atomic"
 )
-
-type WorkflowFactory[In, Out any] struct {
-	resolver resolveWorkflow[In, Out]
-}
-
-func (w WorkflowFactory[In, Out]) New(in In) (Out, error) {
-	return w.resolver(in)
-}
-
-type Context struct {
-	nodeCount *atomic.Int64
-	ctx       context.Context
-}
-
-type HandlerFunc[In, In2Out, Out any] func(In) Noder[In2Out, Out]
-type resolveWorkflow[In, Out any] func(In) (Out, error)
-
-type WorkflowInput[Req any] NodeDefinition[io.ReadCloser, Req]
-
-func NewWorkflowFactory[In, In2Out, Out any](handler HandlerFunc[In, In2Out, Out]) WorkflowFactory[In, Out] {
-	return WorkflowFactory[In, Out]{
-		resolver: func(in In) (Out, error) {
-			nCtx := Context{
-				nodeCount: &atomic.Int64{},
-				ctx:       context.Background(),
-			}
-			resultNode := handler(in)
-			out, err := resultNode.Out(nCtx)
-			return out, err
-		},
-	}
-}
 
 type NodeDefinition[In, Out any] interface {
 	heart()
-	Input(Outputer[In]) Noder[In, Out]
+	Bind(Outputer[In]) Noder[In, Out]
 }
 
 type into[Out any] struct{ out Out }
@@ -71,48 +37,13 @@ func (d *definition[In, Out]) init() error {
 	return dependencyInject(d.initializer, d.initializer.ID())
 }
 
-type node[In, Out any] struct {
-	d     *definition[In, Out]
-	in    Outputer[In]
-	inOut InOut[In, Out]
-	err   error
-}
-
-func (o *node[In, Out]) get(nc Context) {
-	o.d.once.Do(func() {
-		o.err = o.d.init()
-		if o.err != nil {
-			return
-		}
-		o.inOut.In, o.err = o.in.Out(nc)
-		if o.err != nil {
-			return
-		}
-		o.inOut.Out, o.err = o.d.resolver.Get(nc.ctx, o.inOut.In)
-	})
-}
-
-func (o *node[In, Out]) In(nc Context) (In, error) {
-	o.get(nc)
-	return o.inOut.In, o.err
-}
-
-func (o *node[In, Out]) Out(nc Context) (Out, error) {
-	o.get(nc)
-	return o.inOut.Out, o.err
-}
-
-func (o *node[In, Out]) InOut(nc Context) (InOut[In, Out], error) {
-	o.get(nc)
-	return o.inOut, o.err
-}
-
-func (d *definition[In, Out]) Input(in Outputer[In]) Noder[In, Out] {
-	return &node[In, Out]{
+func (d *definition[In, Out]) Bind(in Outputer[In]) Noder[In, Out] {
+	n := &node[In, Out]{
 		d:     d,
 		in:    in,
 		inOut: InOut[In, Out]{},
 	}
+	return n
 }
 
 var _ NodeDefinition[any, any] = (*definition[any, any])(nil)
@@ -122,7 +53,7 @@ func (d *definition[In, Out]) heart() {}
 type NodeID string
 type NodeTypeID string
 
-func DefineNode[In, Out any](nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
+func DefineNode[In, Out any](ctx Context, nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
 	return &definition[In, Out]{id: nodeID, resolver: resolver, once: &sync.Once{}}
 }
 
@@ -136,18 +67,32 @@ type InOut[In, Out any] struct {
 	Out Out
 }
 
+type InputerGetter[In any] interface {
+	heart()
+}
+
 type Inputer[In any] interface {
-	In(Context) (In, error)
+	In(InputerGetter[In]) (In, error)
+}
+
+type OutputerGetter[Out any] interface {
+	heart()
 }
 
 type Outputer[Out any] interface {
-	Out(Context) (Out, error)
+	Out(OutputerGetter[Out]) (Out, error)
+}
+
+type NoderGetter[In, Out any] interface {
+	heart()
+	InputerGetter[In]
+	OutputerGetter[Out]
 }
 
 type Noder[In, Out any] interface {
 	Inputer[In]
 	Outputer[Out]
-	InOut(Context) (InOut[In, Out], error)
+	InOut(NoderGetter[In, Out]) (InOut[In, Out], error)
 }
 
 func FanIn[Out any](func(Context) (Out, error)) Outputer[Out] {
@@ -177,6 +122,27 @@ type connector[Out any] struct{}
 func (c *connector[Out]) Connect(Outputer[Out]) {}
 
 func UseConnector[Out any]() *connector[Out] { return nil }
+
+type Maybe[T any] struct {
+	value    T
+	hasValue bool
+}
+
+func None[T any]() Maybe[T] {
+	return Maybe[T]{hasValue: false}
+}
+
+func Some[T any](value T) Maybe[T] {
+	return Maybe[T]{value: value, hasValue: true}
+}
+
+func MatchMaybe[In, Out any](
+	in Outputer[Maybe[In]],
+	some func(Context, In) Outputer[Out],
+	none func(Context) Outputer[Out],
+) Outputer[Out] {
+	return nil
+}
 
 /*
 func Transform[In, Out, TOut any](nodeID NodeID, node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {

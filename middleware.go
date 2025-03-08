@@ -5,7 +5,7 @@ package heart
 /* Thin middleware */
 
 type thinMiddlewareDefinition[In, Out, NewOut any] struct {
-	middleware func(Context, In, NodeDefinition[In, Out]) (NewOut, error)
+	middleware func(NoderGetter[In, Out], In, NodeDefinition[In, Out]) (NewOut, error)
 	next       NodeDefinition[In, Out]
 }
 
@@ -34,7 +34,7 @@ func (l *thinMiddleware[In, Out]) Out(nc Context) (Out, error) {
 
 func (m *thinMiddlewareDefinition[In, Out, NewOut]) heart() {}
 
-func (m *thinMiddlewareDefinition[In, Out, NewOut]) Input(in Outputer[In]) Noder[In, NewOut] {
+func (m *thinMiddlewareDefinition[In, Out, NewOut]) Bind(in Outputer[In]) Noder[In, NewOut] {
 	lm := &thinMiddleware[In, NewOut]{inOut: InOut[In, NewOut]{}}
 	lm.get = func(nc Context) {
 		lm.inOut.In, lm.err = in.Out(nc)
@@ -47,7 +47,7 @@ func (m *thinMiddlewareDefinition[In, Out, NewOut]) Input(in Outputer[In]) Noder
 }
 
 func DefineThinMiddleware[In, Out, NewOut any](
-	middleware func(ctx Context, in In, next NodeDefinition[In, Out]) (NewOut, error),
+	middleware func(getter NoderGetter[In, Out], in In, next NodeDefinition[In, Out]) (NewOut, error),
 	next NodeDefinition[In, Out],
 ) NodeDefinition[In, NewOut] {
 	return &thinMiddlewareDefinition[In, Out, NewOut]{middleware: middleware, next: next}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"heart"
 	"heart/nodes/openai"
@@ -28,10 +29,10 @@ Your output must be structured in the JSON format specified by the provided sche
 
 var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
 
-func handleCarnism(in goopenai.ChatCompletionRequest) heart.Noder[goopenai.ChatCompletionRequest, QuestionAnswer] {
+func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.Outputer[QuestionAnswer] {
 	threeQuestions := openaimiddleware.WithStructuredOutput[VeganQuestions](
 		openai.CreateChatCompletion("three-questions"),
-	).Input(heart.Into(in))
+	).Bind(heart.Into(in))
 
 	firstQuestionRequest := heart.Transform(threeQuestions, func(questions VeganQuestions) (goopenai.ChatCompletionRequest, error) {
 		return goopenai.ChatCompletionRequest{
@@ -53,7 +54,7 @@ func handleCarnism(in goopenai.ChatCompletionRequest) heart.Noder[goopenai.ChatC
 
 	answerToFirstQuestion := openaimiddleware.WithStructuredOutput[QuestionAnswer](
 		openai.CreateChatCompletion("first-question-answer"),
-	).Input(firstQuestionRequest)
+	).Bind(firstQuestionRequest)
 
 	return answerToFirstQuestion
 }
@@ -63,11 +64,13 @@ func main() {
 	authToken := os.Getenv("OPENAI_API_KEY")
 	client := goopenai.NewClient(authToken)
 
+	ctx := context.Background()
+
 	heart.Dependencies(openai.Inject(client))
 
-	carnistDebunkerWorkflowFactory := heart.NewWorkflowFactory(handleCarnism)
+	carnistDebunkerWorkflow := heart.DefineWorkflow(handleCarnism)
 
-	answer, err := carnistDebunkerWorkflowFactory.New(goopenai.ChatCompletionRequest{
+	answer, err := carnistDebunkerWorkflow.New(ctx, goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{
 			{Content: systemMsg, Role: goopenai.ChatMessageRoleSystem},
 			{Content: carnistUserMsg, Role: goopenai.ChatMessageRoleUser},

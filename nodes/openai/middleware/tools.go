@@ -109,7 +109,7 @@ func toolsMiddleware(tools []Tool) func(heart.Context, openai.ChatCompletionRequ
 		}
 		ccr.Tools = openaiTools
 
-		resp, err := nd.Input(heart.Into(ccr)).Out(ctx)
+		resp, err := nd.Bind(heart.Into(ccr)).Out(ctx)
 		if err != nil {
 			return out, err
 		}
@@ -161,7 +161,7 @@ func toolsMiddleware(tools []Tool) func(heart.Context, openai.ChatCompletionRequ
 				})
 			}
 
-			resp, err := nd.Input(heart.Into(ccr)).Out(ctx)
+			resp, err := nd.Bind(heart.Into(ccr)).Out(ctx)
 			if err != nil {
 				return out, err
 			}
