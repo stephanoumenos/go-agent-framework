@@ -526,6 +526,42 @@ func (s *memoryStore) DeleteContent(ctx context.Context, hash string) error {
 	return nil
 }
 
+// UpdateNode updates an existing node's data in the graph
+// If merge is true, it merges the provided data with existing data
+// If merge is false, it replaces the existing data completely
+func (s *memoryStore) UpdateNode(ctx context.Context, graphID, nodeID string, data map[string]any, merge bool) error {
+	graph, err := s.getGraph(graphID)
+	if err != nil {
+		return err
+	}
+
+	// Acquire write lock for this specific graph
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+
+	// Find node
+	node, exists := graph.Nodes[nodeID]
+	if !exists {
+		return ErrNodeNotFound
+	}
+
+	// Update node data
+	if merge {
+		// Merge data with existing data
+		if node.Data == nil {
+			node.Data = make(map[string]any)
+		}
+		for k, v := range data {
+			node.Data[k] = v
+		}
+	} else {
+		// Replace data completely
+		node.Data = data
+	}
+
+	return nil
+}
+
 // Ensure types implement interfaces
 var (
 	_ Store        = (*memoryStore)(nil)

@@ -32,6 +32,7 @@ type GraphStore interface {
 	// Node operations
 	AddNode(ctx context.Context, graphID, nodeID string, data map[string]any) error
 	GetNode(ctx context.Context, graphID, nodeID string) (map[string]any, error)
+	UpdateNode(ctx context.Context, graphID, nodeID string, data map[string]any, merge bool) error
 	ListNodes(ctx context.Context, graphID string) ([]string, error)
 
 	// Edge operations

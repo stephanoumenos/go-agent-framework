@@ -41,19 +41,26 @@ func (n *node[In, Out]) fromNodeState(state *nodeState) {
 	}
 }
 
-func (n *node[In, Out]) defineNode() {
+func (n *node[In, Out]) updateStoreNode() error {
+	return n.d.ctx.store.Graphs().UpdateNode(n.d.ctx.ctx, n.d.ctx.uuid.String(), string(n.d.id), newNodeState(n).toMap(), false)
+}
+
+func (n *node[In, Out]) defineNode() error {
 	n.status = nodeStatusDefined
 	n.startedAt = time.Now()
+	return n.d.ctx.store.Graphs().AddNode(n.d.ctx.ctx, n.d.ctx.uuid.String(), string(n.d.id), newNodeState(n).toMap())
 }
 
-func (n *node[In, Out]) runNode() {
+func (n *node[In, Out]) runNode() error {
 	n.status = nodeStatusRunning
 	n.runAt = time.Now()
+	return n.updateStoreNode()
 }
 
-func (n *node[In, Out]) completeNode() {
+func (n *node[In, Out]) completeNode() error {
 	n.status = nodeStatusComplete
 	n.completedAt = time.Now()
+	return n.updateStoreNode()
 }
 
 func (n *node[In, Out]) init(ctx Context) error {
@@ -64,12 +71,7 @@ func (n *node[In, Out]) init(ctx Context) error {
 
 	storeNodeMap, err := ctx.store.Graphs().GetNode(ctx.ctx, ctx.uuid.String(), string(n.d.id))
 	if errors.Is(err, store.ErrNodeNotFound) {
-		n.defineNode()
-		err = ctx.store.Graphs().AddNode(ctx.ctx, ctx.uuid.String(), string(n.d.id), newNodeState(n).toMap())
-		if err != nil {
-			return err
-		}
-		return nil
+		return n.defineNode()
 	}
 	if err != nil {
 		return err
@@ -92,7 +94,12 @@ func (o *node[In, Out]) get(nc NoderGetter) {
 		if o.status != nodeStatusDefined {
 			return
 		}
+		o.err = o.runNode()
+		if o.err != nil {
+			return
+		}
 		o.inOut.In, o.err = o.in.Out(nc)
+		defer o.completeNode()
 		if o.err != nil {
 			return
 		}
