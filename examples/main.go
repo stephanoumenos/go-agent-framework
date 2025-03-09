@@ -6,6 +6,7 @@ import (
 	"heart"
 	"heart/nodes/openai"
 	openaimiddleware "heart/nodes/openai/middleware"
+	"heart/store"
 	"os"
 
 	goopenai "github.com/sashabaranov/go-openai"
@@ -68,7 +69,13 @@ func main() {
 
 	heart.Dependencies(openai.Inject(client))
 
-	carnistDebunkerWorkflow := heart.DefineWorkflow(handleCarnism)
+	fileStore, err := store.NewFileStore("workflows")
+	if err != nil {
+		fmt.Println("error creating file store: ", err)
+		return
+	}
+
+	carnistDebunkerWorkflow := heart.DefineWorkflow(handleCarnism, heart.WithStore(fileStore))
 
 	answer, err := carnistDebunkerWorkflow.New(ctx, goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{

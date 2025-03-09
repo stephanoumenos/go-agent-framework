@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -286,26 +284,6 @@ func (s *memoryStore) GetOutgoingEdges(ctx context.Context, graphID, nodeID stri
 	copy(edgesCopy, node.Edges)
 
 	return edgesCopy, nil
-}
-
-// Helper function to hash content
-func hashContent(content any) (string, error) {
-	bytes, err := json.Marshal(content)
-	if err != nil {
-		return "", err
-	}
-
-	hash := sha256.Sum256(bytes)
-	return hex.EncodeToString(hash[:]), nil
-}
-
-// Helper function to estimate content size
-func estimateContentSize(content any) (int, error) {
-	bytes, err := json.Marshal(content)
-	if err != nil {
-		return 0, err
-	}
-	return len(bytes), nil
 }
 
 // Content operations
