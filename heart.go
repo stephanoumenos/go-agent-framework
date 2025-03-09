@@ -12,12 +12,12 @@ type NodeDefinition[In, Out any] interface {
 
 type into[Out any] struct{ out Out }
 
-func (i *into[Out]) Out(Context) (Out, error) {
+func (i *into[Out]) Out(OutputerGetter) (Out, error) {
 	return i.out, nil
 }
 
 func Into[Out any](out Out) Outputer[Out] {
-	return &into[Out]{out}
+	return &into[Out]{out: out}
 }
 
 type NodeInitializer interface {
@@ -29,6 +29,7 @@ type definition[In, Out any] struct {
 	initializer NodeInitializer
 	resolver    NodeResolver[In, Out]
 	once        *sync.Once
+	ctx         Context
 	idx         int64
 }
 
@@ -43,6 +44,9 @@ func (d *definition[In, Out]) Bind(in Outputer[In]) Noder[In, Out] {
 		in:    in,
 		inOut: InOut[In, Out]{},
 	}
+	go func() {
+		n.get(&getter{})
+	}()
 	return n
 }
 
@@ -54,7 +58,7 @@ type NodeID string
 type NodeTypeID string
 
 func DefineNode[In, Out any](ctx Context, nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
-	return &definition[In, Out]{id: nodeID, resolver: resolver, once: &sync.Once{}}
+	return &definition[In, Out]{id: nodeID, resolver: resolver, ctx: ctx, once: &sync.Once{}}
 }
 
 type NodeResolver[In, Out any] interface {
@@ -67,32 +71,32 @@ type InOut[In, Out any] struct {
 	Out Out
 }
 
-type InputerGetter[In any] interface {
+type InputerGetter interface {
 	heart()
 }
 
 type Inputer[In any] interface {
-	In(InputerGetter[In]) (In, error)
+	In(InputerGetter) (In, error)
 }
 
-type OutputerGetter[Out any] interface {
+type OutputerGetter interface {
 	heart()
 }
 
 type Outputer[Out any] interface {
-	Out(OutputerGetter[Out]) (Out, error)
+	Out(OutputerGetter) (Out, error)
 }
 
-type NoderGetter[In, Out any] interface {
+type NoderGetter interface {
 	heart()
-	InputerGetter[In]
-	OutputerGetter[Out]
+	InputerGetter
+	OutputerGetter
 }
 
 type Noder[In, Out any] interface {
 	Inputer[In]
 	Outputer[Out]
-	InOut(NoderGetter[In, Out]) (InOut[In, Out], error)
+	InOut(NoderGetter) (InOut[In, Out], error)
 }
 
 func FanIn[Out any](func(Context) (Out, error)) Outputer[Out] {
@@ -113,8 +117,22 @@ func Filter[SIn ~[]In, In any](s Outputer[SIn], fun func(In) Outputer[bool]) Out
 	return nil
 }
 
-func Transform[In, Out any](Outputer[In], func(In) (Out, error)) Outputer[Out] {
-	return nil
+type transform[In, Out any] struct {
+	in  Outputer[In]
+	fun func(In) (Out, error)
+}
+
+func (t *transform[In, Out]) Out(nc OutputerGetter) (Out, error) {
+	var out Out
+	in, err := t.in.Out(nc)
+	if err != nil {
+		return out, err
+	}
+	return t.fun(in)
+}
+
+func Transform[In, Out any](in Outputer[In], fun func(In) (Out, error)) Outputer[Out] {
+	return &transform[In, Out]{in: in, fun: fun}
 }
 
 type connector[Out any] struct{}

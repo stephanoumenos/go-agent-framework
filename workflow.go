@@ -16,9 +16,9 @@ type WorkflowDefinition[In, Out any] struct {
 	store   store.Store
 }
 
-type workflowGetter[Out any] struct{}
+type getter struct{}
 
-func (w *workflowGetter[Out]) heart() {}
+func (g *getter) heart() {}
 
 func (w WorkflowDefinition[In, Out]) New(ctx context.Context, in In) (Out, error) {
 	workflowCtx := Context{
@@ -26,13 +26,14 @@ func (w WorkflowDefinition[In, Out]) New(ctx context.Context, in In) (Out, error
 		nodeCount: &atomic.Int64{},
 		store:     w.store,
 		uuid:      WorkflowUUID(uuid.New()),
+		start:     make(chan struct{}),
 	}
 	err := workflowCtx.store.Graphs().CreateGraph(ctx, workflowCtx.uuid.String())
 	var o Out
 	if err != nil {
 		return o, err
 	}
-	return w.handler(workflowCtx, in).Out(&workflowGetter[Out]{})
+	return w.handler(workflowCtx, in).Out(&getter{})
 }
 
 type WorkflowUUID = uuid.UUID
@@ -42,6 +43,7 @@ type Context struct {
 	nodeCount *atomic.Int64
 	store     store.Store
 	uuid      WorkflowUUID
+	start     chan struct{}
 }
 
 type HandlerFunc[In, Out any] func(Context, In) Outputer[Out]

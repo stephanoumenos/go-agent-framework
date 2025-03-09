@@ -83,34 +83,34 @@ func (n *node[In, Out]) init(ctx Context) error {
 	return nil
 }
 
-func (o *node[In, Out]) get(ctx Context) {
+func (o *node[In, Out]) get(nc NoderGetter) {
 	o.d.once.Do(func() {
-		o.err = o.init(ctx)
+		o.err = o.init(o.d.ctx)
 		if o.err != nil {
 			return
 		}
 		if o.status != nodeStatusDefined {
 			return
 		}
-		o.inOut.In, o.err = o.in.Out(ctx)
+		o.inOut.In, o.err = o.in.Out(nc)
 		if o.err != nil {
 			return
 		}
-		o.inOut.Out, o.err = o.d.resolver.Get(ctx.ctx, o.inOut.In)
+		o.inOut.Out, o.err = o.d.resolver.Get(o.d.ctx.ctx, o.inOut.In)
 	})
 }
 
-func (o *node[In, Out]) In(nc Context) (In, error) {
+func (o *node[In, Out]) In(nc InputerGetter) (In, error) {
 	o.get(nc)
 	return o.inOut.In, o.err
 }
 
-func (o *node[In, Out]) Out(nc Context) (Out, error) {
+func (o *node[In, Out]) Out(nc OutputerGetter) (Out, error) {
 	o.get(nc)
 	return o.inOut.Out, o.err
 }
 
-func (o *node[In, Out]) InOut(nc Context) (InOut[In, Out], error) {
+func (o *node[In, Out]) InOut(nc NoderGetter) (InOut[In, Out], error) {
 	o.get(nc)
 	return o.inOut, o.err
 }

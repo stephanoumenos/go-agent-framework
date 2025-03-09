@@ -31,7 +31,7 @@ var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors ha
 
 func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.Outputer[QuestionAnswer] {
 	threeQuestions := openaimiddleware.WithStructuredOutput[VeganQuestions](
-		openai.CreateChatCompletion("three-questions"),
+		openai.CreateChatCompletion(ctx, "three-questions"),
 	).Bind(heart.Into(in))
 
 	firstQuestionRequest := heart.Transform(threeQuestions, func(questions VeganQuestions) (goopenai.ChatCompletionRequest, error) {
@@ -53,7 +53,7 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 	})
 
 	answerToFirstQuestion := openaimiddleware.WithStructuredOutput[QuestionAnswer](
-		openai.CreateChatCompletion("first-question-answer"),
+		openai.CreateChatCompletion(ctx, "first-question-answer"),
 	).Bind(firstQuestionRequest)
 
 	return answerToFirstQuestion
