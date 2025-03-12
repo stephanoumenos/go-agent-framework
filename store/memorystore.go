@@ -21,7 +21,7 @@ type memoryGraph struct {
 type memoryNode struct {
 	ID               string
 	Data             map[string]any
-	Edges            []string
+	Dependencies     []string
 	RequestHash      string
 	RequestContent   any
 	RequestEmbedded  bool
@@ -144,9 +144,9 @@ func (s *memoryStore) AddNode(ctx context.Context, graphID, nodeID string, data 
 
 	// Create new node
 	node := &memoryNode{
-		ID:    nodeID,
-		Data:  data,
-		Edges: make([]string, 0),
+		ID:           nodeID,
+		Data:         data,
+		Dependencies: make([]string, 0),
 	}
 
 	// Store it
@@ -198,8 +198,8 @@ func (s *memoryStore) ListNodes(ctx context.Context, graphID string) ([]string, 
 	return nodeIDs, nil
 }
 
-// Edge operations
-func (s *memoryStore) AddEdge(ctx context.Context, graphID, fromID, toID string) error {
+// Dependency operations
+func (s *memoryStore) AddDependency(ctx context.Context, graphID, fromID, toID string) error {
 	graph, err := s.getGraph(graphID)
 	if err != nil {
 		return err
@@ -220,20 +220,20 @@ func (s *memoryStore) AddEdge(ctx context.Context, graphID, fromID, toID string)
 		return ErrNodeNotFound
 	}
 
-	// Check if edge already exists
-	for _, edge := range fromNode.Edges {
-		if edge == toID {
-			return nil // Edge already exists
+	// Check if dependency already exists
+	for _, dependency := range fromNode.Dependencies {
+		if dependency == toID {
+			return nil // Dependency already exists
 		}
 	}
 
-	// Add edge
-	fromNode.Edges = append(fromNode.Edges, toID)
+	// Add dependency
+	fromNode.Dependencies = append(fromNode.Dependencies, toID)
 
 	return nil
 }
 
-func (s *memoryStore) RemoveEdge(ctx context.Context, graphID, fromID, toID string) error {
+func (s *memoryStore) RemoveDependency(ctx context.Context, graphID, fromID, toID string) error {
 	graph, err := s.getGraph(graphID)
 	if err != nil {
 		return err
@@ -249,21 +249,21 @@ func (s *memoryStore) RemoveEdge(ctx context.Context, graphID, fromID, toID stri
 		return ErrNodeNotFound
 	}
 
-	// Find and remove edge
-	newEdges := make([]string, 0, len(fromNode.Edges))
-	for _, edge := range fromNode.Edges {
-		if edge != toID {
-			newEdges = append(newEdges, edge)
+	// Find and remove dependency
+	newDependencies := make([]string, 0, len(fromNode.Dependencies))
+	for _, dependency := range fromNode.Dependencies {
+		if dependency != toID {
+			newDependencies = append(newDependencies, dependency)
 		}
 	}
 
-	// Update edges
-	fromNode.Edges = newEdges
+	// Update dependencies
+	fromNode.Dependencies = newDependencies
 
 	return nil
 }
 
-func (s *memoryStore) GetOutgoingEdges(ctx context.Context, graphID, nodeID string) ([]string, error) {
+func (s *memoryStore) GetDependencies(ctx context.Context, graphID, nodeID string) ([]string, error) {
 	graph, err := s.getGraph(graphID)
 	if err != nil {
 		return nil, err
@@ -279,11 +279,11 @@ func (s *memoryStore) GetOutgoingEdges(ctx context.Context, graphID, nodeID stri
 		return nil, ErrNodeNotFound
 	}
 
-	// Copy edges to prevent modification
-	edgesCopy := make([]string, len(node.Edges))
-	copy(edgesCopy, node.Edges)
+	// Copy dependencies to prevent modification
+	dependenciesCopy := make([]string, len(node.Dependencies))
+	copy(dependenciesCopy, node.Dependencies)
 
-	return edgesCopy, nil
+	return dependenciesCopy, nil
 }
 
 // Content operations

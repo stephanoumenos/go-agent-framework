@@ -19,7 +19,7 @@ type fileGraph struct {
 type fileNode struct {
 	ID               string         `json:"id"`
 	Data             map[string]any `json:"data"`
-	Edges            []string       `json:"edges"`
+	Dependencies     []string       `json:"dependencies"`
 	RequestHash      string         `json:"requestHash,omitempty"`
 	RequestEmbedded  bool           `json:"requestEmbedded,omitempty"`
 	RequestContent   any            `json:"requestContent,omitempty"`
@@ -280,9 +280,9 @@ func (s *fileStore) AddNode(ctx context.Context, graphID, nodeID string, data ma
 
 	// Create new node
 	node := &fileNode{
-		ID:    nodeID,
-		Data:  data,
-		Edges: make([]string, 0),
+		ID:           nodeID,
+		Data:         data,
+		Dependencies: make([]string, 0),
 	}
 
 	// Add node to graph
@@ -340,8 +340,8 @@ func (s *fileStore) ListNodes(ctx context.Context, graphID string) ([]string, er
 	return nodeIDs, nil
 }
 
-// Edge operations
-func (s *fileStore) AddEdge(ctx context.Context, graphID, fromID, toID string) error {
+// Dependency operations
+func (s *fileStore) AddDependency(ctx context.Context, graphID, fromID, toID string) error {
 	s.graphLock.Lock()
 	defer s.graphLock.Unlock()
 
@@ -361,15 +361,15 @@ func (s *fileStore) AddEdge(ctx context.Context, graphID, fromID, toID string) e
 		return ErrNodeNotFound
 	}
 
-	// Check if edge already exists
-	for _, edge := range fromNode.Edges {
-		if edge == toID {
-			return nil // Edge already exists
+	// Check if dependency already exists
+	for _, dependency := range fromNode.Dependencies {
+		if dependency == toID {
+			return nil // Dependency already exists
 		}
 	}
 
-	// Add edge
-	fromNode.Edges = append(fromNode.Edges, toID)
+	// Add dependency
+	fromNode.Dependencies = append(fromNode.Dependencies, toID)
 
 	// Save graph
 	if err := s.saveGraph(graph); err != nil {
@@ -379,7 +379,7 @@ func (s *fileStore) AddEdge(ctx context.Context, graphID, fromID, toID string) e
 	return nil
 }
 
-func (s *fileStore) RemoveEdge(ctx context.Context, graphID, fromID, toID string) error {
+func (s *fileStore) RemoveDependency(ctx context.Context, graphID, fromID, toID string) error {
 	s.graphLock.Lock()
 	defer s.graphLock.Unlock()
 
@@ -395,16 +395,16 @@ func (s *fileStore) RemoveEdge(ctx context.Context, graphID, fromID, toID string
 		return ErrNodeNotFound
 	}
 
-	// Filter out the edge
-	newEdges := make([]string, 0, len(fromNode.Edges))
-	for _, edge := range fromNode.Edges {
-		if edge != toID {
-			newEdges = append(newEdges, edge)
+	// Filter out the dependency
+	newDependencies := make([]string, 0, len(fromNode.Dependencies))
+	for _, dependency := range fromNode.Dependencies {
+		if dependency != toID {
+			newDependencies = append(newDependencies, dependency)
 		}
 	}
 
-	// Update edges
-	fromNode.Edges = newEdges
+	// Update dependencies
+	fromNode.Dependencies = newDependencies
 
 	// Save graph
 	if err := s.saveGraph(graph); err != nil {
@@ -414,7 +414,7 @@ func (s *fileStore) RemoveEdge(ctx context.Context, graphID, fromID, toID string
 	return nil
 }
 
-func (s *fileStore) GetOutgoingEdges(ctx context.Context, graphID, nodeID string) ([]string, error) {
+func (s *fileStore) GetDependencies(ctx context.Context, graphID, nodeID string) ([]string, error) {
 	s.graphLock.RLock()
 	defer s.graphLock.RUnlock()
 
@@ -430,11 +430,11 @@ func (s *fileStore) GetOutgoingEdges(ctx context.Context, graphID, nodeID string
 		return nil, ErrNodeNotFound
 	}
 
-	// Copy edges to prevent modification
-	edgesCopy := make([]string, len(node.Edges))
-	copy(edgesCopy, node.Edges)
+	// Copy dependencies to prevent modification
+	dependenciesCopy := make([]string, len(node.Dependencies))
+	copy(dependenciesCopy, node.Dependencies)
 
-	return edgesCopy, nil
+	return dependenciesCopy, nil
 }
 
 // Content operations

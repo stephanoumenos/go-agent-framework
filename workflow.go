@@ -16,9 +16,15 @@ type WorkflowDefinition[In, Out any] struct {
 	store   store.Store
 }
 
-type getter struct{}
+type getter struct {
+	_child *NodeID
+}
 
-func (g *getter) heart() {}
+func (g getter) child() *NodeID {
+	return g._child
+}
+
+func (g getter) heart() {}
 
 func (w WorkflowDefinition[In, Out]) New(ctx context.Context, in In) (Out, error) {
 	workflowCtx := Context{
@@ -33,7 +39,7 @@ func (w WorkflowDefinition[In, Out]) New(ctx context.Context, in In) (Out, error
 	if err != nil {
 		return o, err
 	}
-	return w.handler(workflowCtx, in).Out(&getter{})
+	return w.handler(workflowCtx, in).Out(getter{_child: nil}) // nil child is final output
 }
 
 type WorkflowUUID = uuid.UUID

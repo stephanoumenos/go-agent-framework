@@ -3,6 +3,7 @@ package heart
 import (
 	"errors"
 	"heart/store"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,9 @@ type node[In, Out any] struct {
 	startedAt   time.Time
 	runAt       time.Time
 	completedAt time.Time
+	children    map[NodeID]struct{}
+	isTerminal  bool // If it's a last node before for a workflow output
+	childrenMtx sync.Mutex
 }
 
 type nodeStatus string
@@ -86,6 +90,16 @@ func (n *node[In, Out]) init(ctx Context) error {
 }
 
 func (o *node[In, Out]) get(nc NoderGetter) {
+	// We always add the child to the children set no matter what
+	child := nc.child()
+	o.childrenMtx.Lock()
+	if child == nil {
+		o.isTerminal = true
+	} else {
+		o.children[*child] = struct{}{}
+	}
+	o.childrenMtx.Unlock()
+
 	o.d.once.Do(func() {
 		o.err = o.init(o.d.ctx)
 		if o.err != nil {

@@ -45,7 +45,7 @@ func (d *definition[In, Out]) Bind(in Outputer[In]) Noder[In, Out] {
 		inOut: InOut[In, Out]{},
 	}
 	go func() {
-		n.get(&getter{})
+		n.get(&getter{_child: &d.id})
 	}()
 	return n
 }
@@ -72,6 +72,7 @@ type InOut[In, Out any] struct {
 }
 
 type InputerGetter interface {
+	child() *NodeID
 	heart()
 }
 
@@ -80,6 +81,7 @@ type Inputer[In any] interface {
 }
 
 type OutputerGetter interface {
+	child() *NodeID
 	heart()
 }
 
@@ -89,7 +91,8 @@ type Outputer[Out any] interface {
 
 type NoderGetter interface {
 	heart()
-	InputerGetter
+	child() *NodeID
+	InputerGetter // TODO: Maybe always have an input and an output for simplicity?
 	OutputerGetter
 }
 
@@ -135,6 +138,14 @@ func Transform[In, Out any](in Outputer[In], fun func(In) (Out, error)) Outputer
 	return &transform[In, Out]{in: in, fun: fun}
 }
 
+func Root[Out any](nodeID NodeID, fun func(context.Context) (Out, error)) Outputer[Out] {
+	return nil
+}
+
+func Node[In, Out any](nodeID NodeID, in Outputer[In], fun func(context.Context, In) (Out, error)) Noder[In, Out] {
+	return nil
+}
+
 type connector[Out any] struct{}
 
 func (c *connector[Out]) Connect(Outputer[Out]) {}
@@ -163,15 +174,6 @@ func MatchMaybe[In, Out any](
 }
 
 /*
-func Transform[In, Out, TOut any](nodeID NodeID, node Output[In, Out], fun func(Out) (TOut, error)) Output[Out, TOut] {
-	return mapperNodeType(nodeID, func(in Out) (TOut, error) {
-		return fun(in)
-	}).FanIn(func(nc Context) (Out, error) {
-		out, err := node.Get(nc)
-		return out.Output, err
-	})
-}
-*/
 
 /* Ideas
 type Condition any

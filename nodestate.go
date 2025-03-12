@@ -6,9 +6,11 @@ import (
 )
 
 type nodeState struct {
-	ID     string     `json:"id"`
-	Status nodeStatus `json:"status"`
-	Error  string     `json:"error,omitempty"`
+	ID         string     `json:"id"`
+	Status     nodeStatus `json:"status"`
+	Error      string     `json:"error,omitempty"`
+	Children   []string   `json:"children,omitempty"`
+	IsTerminal bool       `json:"is_terminal"`
 }
 
 func (ns *nodeState) toMap() map[string]any {
@@ -53,9 +55,19 @@ func newNodeState[In, Out any](n *node[In, Out]) *nodeState {
 		errStr = n.err.Error()
 	}
 
+	n.childrenMtx.Lock()
+	var children []string
+	for child := range n.children {
+		children = append(children, string(child))
+	}
+	isTerminal := n.isTerminal
+	n.childrenMtx.Unlock()
+
 	return &nodeState{
-		ID:     string(n.d.id),
-		Status: n.status,
-		Error:  errStr,
+		ID:         string(n.d.id),
+		Status:     n.status,
+		Error:      errStr,
+		Children:   children,
+		IsTerminal: isTerminal,
 	}
 }
