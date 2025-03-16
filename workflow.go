@@ -27,17 +27,19 @@ func (g getter) child() *NodeID {
 func (g getter) heart() {}
 
 func (w WorkflowDefinition[In, Out]) New(ctx context.Context, in In) (Out, error) {
+	workflowUUID := WorkflowUUID(uuid.New())
+	err := w.store.Graphs().CreateGraph(ctx, workflowUUID.String())
+	var o Out
+	if err != nil {
+		return o, err
+	}
 	workflowCtx := Context{
 		ctx:       ctx,
 		nodeCount: &atomic.Int64{},
 		store:     w.store,
-		uuid:      WorkflowUUID(uuid.New()),
+		uuid:      workflowUUID,
+		scheduler: newWorkflowScheduler(),
 		start:     make(chan struct{}),
-	}
-	err := workflowCtx.store.Graphs().CreateGraph(ctx, workflowCtx.uuid.String())
-	var o Out
-	if err != nil {
-		return o, err
 	}
 	return w.handler(workflowCtx, in).Out(getter{_child: nil}) // nil child is final output
 }
@@ -50,6 +52,7 @@ type Context struct {
 	store     store.Store
 	uuid      WorkflowUUID
 	start     chan struct{}
+	scheduler *workflowScheduler
 }
 
 type HandlerFunc[In, Out any] func(Context, In) Outputer[Out]

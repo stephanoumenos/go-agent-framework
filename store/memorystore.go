@@ -21,7 +21,6 @@ type memoryGraph struct {
 type memoryNode struct {
 	ID               string
 	Data             map[string]any
-	Dependencies     []string
 	RequestHash      string
 	RequestContent   any
 	RequestEmbedded  bool
@@ -144,9 +143,8 @@ func (s *memoryStore) AddNode(ctx context.Context, graphID, nodeID string, data 
 
 	// Create new node
 	node := &memoryNode{
-		ID:           nodeID,
-		Data:         data,
-		Dependencies: make([]string, 0),
+		ID:   nodeID,
+		Data: data,
 	}
 
 	// Store it
@@ -196,94 +194,6 @@ func (s *memoryStore) ListNodes(ctx context.Context, graphID string) ([]string, 
 	}
 
 	return nodeIDs, nil
-}
-
-// Dependency operations
-func (s *memoryStore) AddDependency(ctx context.Context, graphID, fromID, toID string) error {
-	graph, err := s.getGraph(graphID)
-	if err != nil {
-		return err
-	}
-
-	// Acquire write lock for this specific graph
-	graph.mu.Lock()
-	defer graph.mu.Unlock()
-
-	// Find source node
-	fromNode, exists := graph.Nodes[fromID]
-	if !exists {
-		return ErrNodeNotFound
-	}
-
-	// Verify target node exists
-	if _, exists := graph.Nodes[toID]; !exists {
-		return ErrNodeNotFound
-	}
-
-	// Check if dependency already exists
-	for _, dependency := range fromNode.Dependencies {
-		if dependency == toID {
-			return nil // Dependency already exists
-		}
-	}
-
-	// Add dependency
-	fromNode.Dependencies = append(fromNode.Dependencies, toID)
-
-	return nil
-}
-
-func (s *memoryStore) RemoveDependency(ctx context.Context, graphID, fromID, toID string) error {
-	graph, err := s.getGraph(graphID)
-	if err != nil {
-		return err
-	}
-
-	// Acquire write lock for this specific graph
-	graph.mu.Lock()
-	defer graph.mu.Unlock()
-
-	// Find source node
-	fromNode, exists := graph.Nodes[fromID]
-	if !exists {
-		return ErrNodeNotFound
-	}
-
-	// Find and remove dependency
-	newDependencies := make([]string, 0, len(fromNode.Dependencies))
-	for _, dependency := range fromNode.Dependencies {
-		if dependency != toID {
-			newDependencies = append(newDependencies, dependency)
-		}
-	}
-
-	// Update dependencies
-	fromNode.Dependencies = newDependencies
-
-	return nil
-}
-
-func (s *memoryStore) GetDependencies(ctx context.Context, graphID, nodeID string) ([]string, error) {
-	graph, err := s.getGraph(graphID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Acquire read lock for this specific graph
-	graph.mu.RLock()
-	defer graph.mu.RUnlock()
-
-	// Find node
-	node, exists := graph.Nodes[nodeID]
-	if !exists {
-		return nil, ErrNodeNotFound
-	}
-
-	// Copy dependencies to prevent modification
-	dependenciesCopy := make([]string, len(node.Dependencies))
-	copy(dependenciesCopy, node.Dependencies)
-
-	return dependenciesCopy, nil
 }
 
 // Content operations

@@ -35,11 +35,6 @@ type GraphStore interface {
 	UpdateNode(ctx context.Context, graphID, nodeID string, data map[string]any, merge bool) error
 	ListNodes(ctx context.Context, graphID string) ([]string, error)
 
-	// Dependency operations
-	AddDependency(ctx context.Context, graphID, fromID, toID string) error
-	RemoveDependency(ctx context.Context, graphID, fromID, toID string) error
-	GetDependencies(ctx context.Context, graphID, nodeID string) ([]string, error)
-
 	// Content operations
 	SetNodeRequestContent(ctx context.Context, graphID, nodeID string, content any, forceEmbed bool) (string, error)
 	GetNodeRequestContent(ctx context.Context, graphID, nodeID string) (any, *ContentRef, error)

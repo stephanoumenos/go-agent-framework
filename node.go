@@ -11,12 +11,12 @@ type node[In, Out any] struct {
 	d           *definition[In, Out]
 	in          Outputer[In]
 	inOut       InOut[In, Out]
+	outHash     string
 	err         error
 	status      nodeStatus
 	startedAt   time.Time
 	runAt       time.Time
 	completedAt time.Time
-	children    map[NodeID]struct{}
 	isTerminal  bool // If it's a last node before for a workflow output
 	childrenMtx sync.Mutex
 }
@@ -25,6 +25,7 @@ type nodeStatus string
 
 const (
 	nodeStatusDefined  = "NODE_STATUS_DEFINED"
+	nodeStatusError    = "NODE_STATUS_ERROR"
 	nodeStatusRunning  = "NODE_STATUS_RUNNING"
 	nodeStatusComplete = "NODE_STATUS_COMPLETE"
 )
@@ -64,7 +65,13 @@ func (n *node[In, Out]) runNode() error {
 func (n *node[In, Out]) completeNode() error {
 	n.status = nodeStatusComplete
 	n.completedAt = time.Now()
-	return n.updateStoreNode()
+	err := n.updateStoreNode()
+	if err != nil {
+		return err
+	}
+	// Try to save response
+	n.outHash, err = n.d.ctx.store.Graphs().SetNodeResponseContent(n.d.ctx.ctx, n.d.ctx.uuid.String(), string(n.d.id), n.inOut.Out, false)
+	return err
 }
 
 func (n *node[In, Out]) init(ctx Context) error {
@@ -90,17 +97,10 @@ func (n *node[In, Out]) init(ctx Context) error {
 }
 
 func (o *node[In, Out]) get(nc NoderGetter) {
-	// We always add the child to the children set no matter what
-	child := nc.child()
-	o.childrenMtx.Lock()
-	if child == nil {
-		o.isTerminal = true
-	} else {
-		o.children[*child] = struct{}{}
-	}
-	o.childrenMtx.Unlock()
-
 	o.d.once.Do(func() {
+		if ok := o.d.ctx.scheduler.registerNode(o.d.id); !ok {
+			o.err = errors.New("node already defined with node id: " + string(o.d.id))
+		}
 		o.err = o.init(o.d.ctx)
 		if o.err != nil {
 			return
@@ -108,12 +108,12 @@ func (o *node[In, Out]) get(nc NoderGetter) {
 		if o.status != nodeStatusDefined {
 			return
 		}
+		defer o.completeNode()
 		o.err = o.runNode()
 		if o.err != nil {
 			return
 		}
 		o.inOut.In, o.err = o.in.Out(nc)
-		defer o.completeNode()
 		if o.err != nil {
 			return
 		}

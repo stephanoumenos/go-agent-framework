@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,7 +21,6 @@ type fileGraph struct {
 type fileNode struct {
 	ID               string         `json:"id"`
 	Data             map[string]any `json:"data"`
-	Dependencies     []string       `json:"dependencies"`
 	RequestHash      string         `json:"requestHash,omitempty"`
 	RequestEmbedded  bool           `json:"requestEmbedded,omitempty"`
 	RequestContent   any            `json:"requestContent,omitempty"`
@@ -77,6 +78,19 @@ type fileStore struct {
 	globalLock  sync.RWMutex
 	activeGraph string       // Current active graph for content operations
 	activeGLock sync.RWMutex // Lock for active graph
+}
+
+// marshalContent marshals content with pretty printing
+// Returns both the marshaled data and any error
+func marshalContent(content any) ([]byte, error) {
+	// Always use pretty printing (can be made configurable later)
+	return json.MarshalIndent(content, "", "  ")
+}
+
+// calculateHashFromBytes calculates a SHA-256 hash from byte data
+func calculateHashFromBytes(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }
 
 // initialize scans the root directory to find existing graphs
@@ -162,7 +176,7 @@ func (s *fileStore) CreateGraph(ctx context.Context, graphID string) error {
 		Nodes: make(map[string]*fileNode),
 	}
 
-	graphData, err := json.Marshal(graph)
+	graphData, err := marshalContent(graph)
 	if err != nil {
 		return fmt.Errorf("failed to marshal graph data: %w", err)
 	}
@@ -250,7 +264,7 @@ func (s *fileStore) loadGraph(graphID string) (*fileGraph, error) {
 }
 
 func (s *fileStore) saveGraph(graph *fileGraph) error {
-	data, err := json.Marshal(graph)
+	data, err := marshalContent(graph)
 	if err != nil {
 		return fmt.Errorf("failed to marshal graph data: %w", err)
 	}
@@ -280,9 +294,8 @@ func (s *fileStore) AddNode(ctx context.Context, graphID, nodeID string, data ma
 
 	// Create new node
 	node := &fileNode{
-		ID:           nodeID,
-		Data:         data,
-		Dependencies: make([]string, 0),
+		ID:   nodeID,
+		Data: data,
 	}
 
 	// Add node to graph
@@ -340,107 +353,11 @@ func (s *fileStore) ListNodes(ctx context.Context, graphID string) ([]string, er
 	return nodeIDs, nil
 }
 
-// Dependency operations
-func (s *fileStore) AddDependency(ctx context.Context, graphID, fromID, toID string) error {
-	s.graphLock.Lock()
-	defer s.graphLock.Unlock()
-
-	// Load graph
-	graph, err := s.loadGraph(graphID)
-	if err != nil {
-		return err
-	}
-
-	// Check if both nodes exist
-	fromNode, fromExists := graph.Nodes[fromID]
-	if !fromExists {
-		return ErrNodeNotFound
-	}
-
-	if _, toExists := graph.Nodes[toID]; !toExists {
-		return ErrNodeNotFound
-	}
-
-	// Check if dependency already exists
-	for _, dependency := range fromNode.Dependencies {
-		if dependency == toID {
-			return nil // Dependency already exists
-		}
-	}
-
-	// Add dependency
-	fromNode.Dependencies = append(fromNode.Dependencies, toID)
-
-	// Save graph
-	if err := s.saveGraph(graph); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *fileStore) RemoveDependency(ctx context.Context, graphID, fromID, toID string) error {
-	s.graphLock.Lock()
-	defer s.graphLock.Unlock()
-
-	// Load graph
-	graph, err := s.loadGraph(graphID)
-	if err != nil {
-		return err
-	}
-
-	// Check if source node exists
-	fromNode, exists := graph.Nodes[fromID]
-	if !exists {
-		return ErrNodeNotFound
-	}
-
-	// Filter out the dependency
-	newDependencies := make([]string, 0, len(fromNode.Dependencies))
-	for _, dependency := range fromNode.Dependencies {
-		if dependency != toID {
-			newDependencies = append(newDependencies, dependency)
-		}
-	}
-
-	// Update dependencies
-	fromNode.Dependencies = newDependencies
-
-	// Save graph
-	if err := s.saveGraph(graph); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *fileStore) GetDependencies(ctx context.Context, graphID, nodeID string) ([]string, error) {
-	s.graphLock.RLock()
-	defer s.graphLock.RUnlock()
-
-	// Load graph
-	graph, err := s.loadGraph(graphID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Find node
-	node, exists := graph.Nodes[nodeID]
-	if !exists {
-		return nil, ErrNodeNotFound
-	}
-
-	// Copy dependencies to prevent modification
-	dependenciesCopy := make([]string, len(node.Dependencies))
-	copy(dependenciesCopy, node.Dependencies)
-
-	return dependenciesCopy, nil
-}
-
 // Content operations
 func (s *fileStore) SetNodeRequestContent(ctx context.Context, graphID, nodeID string, content any, forceEmbed bool) (string, error) {
-	// First verify content is marshallable
-	if _, err := json.Marshal(content); err != nil {
+	// Verify content is marshallable and get the marshaled data in one step
+	contentData, err := marshalContent(content)
+	if err != nil {
 		switch s.options.UnmarshallableContentMode {
 		case StrictMarshaling:
 			return "", fmt.Errorf("%w: %v", ErrMarshaling, err)
@@ -453,36 +370,33 @@ func (s *fileStore) SetNodeRequestContent(ctx context.Context, graphID, nodeID s
 				nodeID, graphID, err)
 			// Replace with placeholder
 			content = map[string]any{"error": "Content could not be marshaled"}
+			contentData, err = marshalContent(content)
+			if err != nil {
+				return "", err
+			}
 		}
 	}
 
-	// Decide whether to embed first
+	// Calculate hash directly from marshaled data
+	hash := calculateHashFromBytes(contentData)
+
+	// Decide whether to embed
 	shouldEmbed := forceEmbed
 	if !shouldEmbed {
-		size, err := estimateContentSize(content)
-		if err == nil && size <= s.options.MaxEmbedSize {
+		size := len(contentData)
+		if size <= s.options.MaxEmbedSize {
 			shouldEmbed = true
 		}
 	}
 
-	var hash string
-	var err error
-
 	if !shouldEmbed {
-		// Set active graph for content operations
+		// Need to store in content store
 		s.activeGLock.Lock()
 		s.activeGraph = graphID
 		s.activeGLock.Unlock()
 
-		// Calculate hash and store in content store
-		hash, err = s.StoreContent(ctx, content)
-		if err != nil {
-			return "", err
-		}
-	} else {
-		// Just calculate the hash for embedded content
-		hash, err = hashContent(content)
-		if err != nil {
+		// Store using our pre-marshaled data
+		if err := s.storeContentBytes(ctx, contentData, hash); err != nil {
 			return "", err
 		}
 	}
@@ -567,8 +481,9 @@ func (s *fileStore) GetNodeRequestContent(ctx context.Context, graphID, nodeID s
 }
 
 func (s *fileStore) SetNodeResponseContent(ctx context.Context, graphID, nodeID string, content any, forceEmbed bool) (string, error) {
-	// First verify content is marshallable
-	if _, err := json.Marshal(content); err != nil {
+	// Verify content is marshallable and get the marshaled data in one step
+	contentData, err := marshalContent(content)
+	if err != nil {
 		switch s.options.UnmarshallableContentMode {
 		case StrictMarshaling:
 			return "", fmt.Errorf("%w: %v", ErrMarshaling, err)
@@ -581,36 +496,33 @@ func (s *fileStore) SetNodeResponseContent(ctx context.Context, graphID, nodeID 
 				nodeID, graphID, err)
 			// Replace with placeholder
 			content = map[string]any{"error": "Content could not be marshaled"}
+			contentData, err = marshalContent(content)
+			if err != nil {
+				return "", err
+			}
 		}
 	}
 
-	// Decide whether to embed first
+	// Calculate hash directly from marshaled data
+	hash := calculateHashFromBytes(contentData)
+
+	// Decide whether to embed
 	shouldEmbed := forceEmbed
 	if !shouldEmbed {
-		size, err := estimateContentSize(content)
-		if err == nil && size <= s.options.MaxEmbedSize {
+		size := len(contentData)
+		if size <= s.options.MaxEmbedSize {
 			shouldEmbed = true
 		}
 	}
 
-	var hash string
-	var err error
-
 	if !shouldEmbed {
-		// Set active graph for content operations
+		// Need to store in content store
 		s.activeGLock.Lock()
 		s.activeGraph = graphID
 		s.activeGLock.Unlock()
 
-		// Calculate hash and store in content store
-		hash, err = s.StoreContent(ctx, content)
-		if err != nil {
-			return "", err
-		}
-	} else {
-		// Just calculate the hash for embedded content
-		hash, err = hashContent(content)
-		if err != nil {
+		// Store using our pre-marshaled data
+		if err := s.storeContentBytes(ctx, contentData, hash); err != nil {
 			return "", err
 		}
 	}
@@ -694,53 +606,59 @@ func (s *fileStore) GetNodeResponseContent(ctx context.Context, graphID, nodeID 
 	return content, contentRef, nil
 }
 
-// Implement ContentStore interface
-func (s *fileStore) StoreContent(ctx context.Context, content any) (string, error) {
+// storeContentBytes stores pre-marshaled content bytes
+func (s *fileStore) storeContentBytes(ctx context.Context, contentData []byte, hash string) error {
 	// Get active graph
 	s.activeGLock.RLock()
 	graphID := s.activeGraph
 	s.activeGLock.RUnlock()
 
 	if graphID == "" {
-		return "", fmt.Errorf("no active graph set for content operations")
+		return fmt.Errorf("no active graph set for content operations")
 	}
 
-	// Calculate hash
-	hash, err := hashContent(content)
-	if err != nil {
-		return "", err
-	}
-
-	s.graphLock.Lock()
-	defer s.graphLock.Unlock()
+	// No need to lock the graph here as the caller (SetNode*Content) will have already locked it
 
 	// Check if graph exists
 	if !s.graphs[graphID] {
-		return "", ErrGraphNotFound
+		return ErrGraphNotFound
 	}
 
 	// Check if content already exists
 	contentFile := s.getContentFile(graphID, hash)
 	if _, err := os.Stat(contentFile); err == nil {
 		// Content already exists
-		return hash, nil
+		return nil
 	}
 
-	// Make sure content directory exists - only create when needed
+	// Make sure content directory exists
 	contentDir := s.getContentDir(graphID)
 	if err := os.MkdirAll(contentDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create content directory: %w", err)
+		return fmt.Errorf("failed to create content directory: %w", err)
 	}
 
-	// Marshal content
-	data, err := json.Marshal(content)
+	// Write content file with pre-marshaled data
+	if err := os.WriteFile(contentFile, contentData, 0644); err != nil {
+		return fmt.Errorf("failed to write content file: %w", err)
+	}
+
+	return nil
+}
+
+// Implement ContentStore interface
+func (s *fileStore) StoreContent(ctx context.Context, content any) (string, error) {
+	// Marshal the content with pretty printing
+	contentData, err := marshalContent(content)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal content: %w", err)
 	}
 
-	// Write content file
-	if err := os.WriteFile(contentFile, data, 0644); err != nil {
-		return "", fmt.Errorf("failed to write content file: %w", err)
+	// Calculate hash directly from marshaled data
+	hash := calculateHashFromBytes(contentData)
+
+	// Store the content bytes
+	if err := s.storeContentBytes(ctx, contentData, hash); err != nil {
+		return "", err
 	}
 
 	return hash, nil
