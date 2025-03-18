@@ -30,7 +30,6 @@ type definition[In, Out any] struct {
 	resolver    NodeResolver[In, Out]
 	once        *sync.Once
 	ctx         Context
-	idx         int64
 }
 
 func (d *definition[In, Out]) init() error {
@@ -102,27 +101,32 @@ type Noder[In, Out any] interface {
 	InOut(NoderGetter) (InOut[In, Out], error)
 }
 
-func FanIn[Out any](func(Context) (Out, error)) Outputer[Out] {
-	// TODO: implement
-	return nil
+type fanInResolver[Out any] struct {
+	fun func(NoderGetter) (Out, error)
 }
 
-func Map[SIn ~[]In, In any, SOut ~[]Out, Out any](s Outputer[SIn], fun func(In) Outputer[Out]) Outputer[SOut] {
-	return nil
+type fanInInitializer struct{}
+
+func (f fanInInitializer) ID() NodeTypeID {
+	return "fanIn"
 }
 
-// TODO: Change to error outputer
-func ForEach[SIn ~[]In, In any](s Outputer[SIn], fun func(In) Outputer[struct{}]) Outputer[struct{}] {
-	return nil
+func (f *fanInResolver[Out]) Init() NodeInitializer {
+	return fanInInitializer{}
 }
 
-func Filter[SIn ~[]In, In any](s Outputer[SIn], fun func(In) Outputer[bool]) Outputer[SIn] {
-	return nil
+func (f *fanInResolver[Out]) Get(context.Context, struct{}) (Out, error) {
+	return f.fun(getter{})
+}
+
+func FanIn[Out any](ctx Context, nodeID NodeID, fun func(NoderGetter) (Out, error)) Outputer[Out] {
+	return DefineNode(ctx, nodeID, &fanInResolver[Out]{fun: fun}).Bind(Into(struct{}{}))
 }
 
 type transform[In, Out any] struct {
+	ctx Context
 	in  Outputer[In]
-	fun func(In) (Out, error)
+	fun func(context.Context, In) (Out, error)
 }
 
 func (t *transform[In, Out]) Out(nc OutputerGetter) (Out, error) {
@@ -131,19 +135,12 @@ func (t *transform[In, Out]) Out(nc OutputerGetter) (Out, error) {
 	if err != nil {
 		return out, err
 	}
-	return t.fun(in)
+	return t.fun(t.ctx.ctx, in)
 }
 
-func Transform[In, Out any](in Outputer[In], fun func(In) (Out, error)) Outputer[Out] {
-	return &transform[In, Out]{in: in, fun: fun}
-}
-
-func Root[Out any](nodeID NodeID, fun func(context.Context) (Out, error)) Outputer[Out] {
-	return nil
-}
-
-func Node[In, Out any](nodeID NodeID, in Outputer[In], fun func(context.Context, In) (Out, error)) Noder[In, Out] {
-	return nil
+func Transform[In, Out any](ctx Context, nodeID NodeID, in Outputer[In], fun func(ctx context.Context, in In) (Out, error)) Outputer[Out] {
+	// TODO: Define node here
+	return &transform[In, Out]{ctx: ctx, in: in, fun: fun}
 }
 
 type connector[Out any] struct{}
@@ -152,25 +149,42 @@ func (c *connector[Out]) Connect(Outputer[Out]) {}
 
 func UseConnector[Out any]() *connector[Out] { return nil }
 
-type Maybe[T any] struct {
-	value    T
-	hasValue bool
+type _if[Out any] struct {
+	ctx        Context
+	nodeID     NodeID
+	_condition Outputer[bool]
+	ifTrue     func(Context) Outputer[Out]
+	_else      func(Context) Outputer[Out]
+	once       *sync.Once
+	out        Out
+	err        error
 }
 
-func None[T any]() Maybe[T] {
-	return Maybe[T]{hasValue: false}
+func (i *_if[Out]) Out(nc OutputerGetter) (Out, error) {
+	i.once.Do(func() {
+		var condition bool
+		condition, i.err = i._condition.Out(nc)
+		if i.err != nil {
+			return
+		}
+		if condition {
+			i.out, i.err = i.ifTrue(i.ctx).Out(nc)
+		} else {
+			i.out, i.err = i._else(i.ctx).Out(nc)
+		}
+	})
+	return i.out, i.err
 }
 
-func Some[T any](value T) Maybe[T] {
-	return Maybe[T]{value: value, hasValue: true}
-}
-
-func MatchMaybe[In, Out any](
-	in Outputer[Maybe[In]],
-	some func(Context, In) Outputer[Out],
-	none func(Context) Outputer[Out],
+func If[Out any](
+	ctx Context,
+	nodeID NodeID,
+	condition Outputer[bool],
+	ifTrue func(Context) Outputer[Out],
+	_else func(Context) Outputer[Out],
 ) Outputer[Out] {
-	return nil
+	// TODO: Define node here
+	return &_if[Out]{ctx: ctx, nodeID: nodeID, _condition: condition, ifTrue: ifTrue, _else: _else, once: &sync.Once{}}
 }
 
 /*

@@ -35,23 +35,27 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 		openai.CreateChatCompletion(ctx, "three-questions"),
 	).Bind(heart.Into(in))
 
-	firstQuestionRequest := heart.Transform(threeQuestions, func(questions VeganQuestions) (goopenai.ChatCompletionRequest, error) {
-		return goopenai.ChatCompletionRequest{
-			Model:       goopenai.GPT4oMini,
-			MaxTokens:   2048,
-			Temperature: 1.000000,
-			Messages: []goopenai.ChatCompletionMessage{
-				{
-					Content: "You are the best vegan activist ever. Please debunk this non-vegan argument.",
-					Role:    goopenai.ChatMessageRoleSystem,
+	firstQuestionRequest := heart.Transform(
+		ctx,
+		"first-question-request",
+		threeQuestions,
+		func(ctx context.Context, questions VeganQuestions) (goopenai.ChatCompletionRequest, error) {
+			return goopenai.ChatCompletionRequest{
+				Model:       goopenai.GPT4oMini,
+				MaxTokens:   2048,
+				Temperature: 1.000000,
+				Messages: []goopenai.ChatCompletionMessage{
+					{
+						Content: "You are the best vegan activist ever. Please debunk this non-vegan argument.",
+						Role:    goopenai.ChatMessageRoleSystem,
+					},
+					{
+						Content: questions.CarnistArgumentOne,
+						Role:    goopenai.ChatMessageRoleUser,
+					},
 				},
-				{
-					Content: questions.CarnistArgumentOne,
-					Role:    goopenai.ChatMessageRoleUser,
-				},
-			},
-		}, nil
-	})
+			}, nil
+		})
 
 	answerToFirstQuestion := openaimiddleware.WithStructuredOutput[QuestionAnswer](
 		openai.CreateChatCompletion(ctx, "first-question-answer"),
