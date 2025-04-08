@@ -17,11 +17,6 @@ type WorkflowDefinition[In, Out any] struct {
 }
 
 type getter struct {
-	_child *NodeID
-}
-
-func (g getter) child() *NodeID {
-	return g._child
 }
 
 func (g getter) heart() {}
@@ -41,7 +36,7 @@ func (w WorkflowDefinition[In, Out]) New(ctx context.Context, in In) (Out, error
 		scheduler: newWorkflowScheduler(),
 		start:     make(chan struct{}),
 	}
-	return w.handler(workflowCtx, in).Out(getter{_child: nil}) // nil child is final output
+	return w.handler(workflowCtx, in).Out(getter{}) // nil child is final output
 }
 
 type WorkflowUUID = uuid.UUID

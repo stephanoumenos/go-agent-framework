@@ -43,8 +43,9 @@ func (d *definition[In, Out]) Bind(in Outputer[In]) Noder[In, Out] {
 		in:    in,
 		inOut: InOut[In, Out]{},
 	}
+	// Schedule the node's execution when Bind is called
 	go func() {
-		n.get(&getter{_child: &d.id})
+		n.get(&getter{})
 	}()
 	return n
 }
@@ -80,13 +81,21 @@ type Outputer[Out any] interface {
 
 type ResolverContext interface {
 	heart()
+	// TODO: Add methods if needed for context passing, e.g., child node ID
 }
+
+// Implement ResolverContext for the internal getter struct used in Workflow.New
+// (Assuming getter is defined elsewhere or implicitly used)
+// type getter struct { /* ... */ }
+// func (g getter) heart() {}
 
 type Noder[In, Out any] interface {
 	Inputer[In]
 	Outputer[Out]
 	InOut(ResolverContext) (InOut[In, Out], error)
 }
+
+// --- FanIn Implementation ---
 
 type fanInResolver[Out any] struct {
 	fun func(ResolverContext) (Out, error)
@@ -102,77 +111,125 @@ func (f *fanInResolver[Out]) Init() NodeInitializer {
 	return fanInInitializer{}
 }
 
-func (f *fanInResolver[Out]) Get(context.Context, struct{}) (Out, error) {
-	return f.fun(getter{})
+func (f *fanInResolver[Out]) Get(ctx context.Context, _ struct{}) (Out, error) {
+	// FanIn's logic depends on the ResolverContext, not the standard context.Context or input
+	// We might need a way to pass the correct ResolverContext here.
+	// Using a placeholder getter for now.
+	return f.fun(getter{}) // Potential issue: Where does getter come from?
 }
 
 func FanIn[Out any](ctx Context, nodeID NodeID, fun func(ResolverContext) (Out, error)) Outputer[Out] {
-	return DefineNode(ctx, nodeID, &fanInResolver[Out]{fun: fun}).Bind(Into(struct{}{}))
+	resolver := &fanInResolver[Out]{fun: fun}
+	// FanIn doesn't conceptually have an input other than the context, so we bind struct{}{}
+	return DefineNode(ctx, nodeID, resolver).Bind(Into(struct{}{}))
 }
 
-type transform[In, Out any] struct {
-	ctx Context
-	in  Outputer[In]
+// --- Transform Implementation ---
+
+// transformResolver implements NodeResolver for the Transform function.
+type transformResolver[In, Out any] struct {
 	fun func(context.Context, In) (Out, error)
+	// No need to store ctx here, Get receives its own context.
 }
 
-func (t *transform[In, Out]) Out(nc ResolverContext) (Out, error) {
-	var out Out
-	in, err := t.in.Out(nc)
-	if err != nil {
-		return out, err
-	}
-	return t.fun(t.ctx.ctx, in)
+// Init returns a generic initializer for the transform node.
+func (tr *transformResolver[In, Out]) Init() NodeInitializer {
+	return genericNodeInitializer{id: "transform"} // Using generic initializer
 }
 
+// Get executes the transformation function provided to Transform.
+func (tr *transformResolver[In, Out]) Get(ctx context.Context, in In) (Out, error) {
+	// Call the user-provided transformation function
+	return tr.fun(ctx, in)
+}
+
+// Transform defines a node that applies a function to the output of another node.
+// It uses DefineNode internally to create a standard heart node.
 func Transform[In, Out any](ctx Context, nodeID NodeID, in Outputer[In], fun func(ctx context.Context, in In) (Out, error)) Outputer[Out] {
-	// TODO: Define node here
-	return &transform[In, Out]{ctx: ctx, in: in, fun: fun}
+	// Create the specific resolver for this transformation
+	resolver := &transformResolver[In, Out]{
+		fun: fun,
+	}
+
+	// Define the node using the standard mechanism
+	nodeDefinition := DefineNode(ctx, nodeID, resolver)
+
+	// Bind the input Outputer to the newly defined node
+	// The result is a Noder, which also implements Outputer[Out]
+	return nodeDefinition.Bind(in)
 }
+
+// --- Connector (Placeholder) ---
 
 type connector[Out any] struct{}
 
 func (c *connector[Out]) Connect(Outputer[Out]) {}
 
-func UseConnector[Out any]() *connector[Out] { return nil }
+func UseConnector[Out any]() *connector[Out] { return nil } // Placeholder
+
+// --- If Implementation ---
 
 type _if[Out any] struct {
 	ctx        Context
-	_condition Outputer[bool]
+	_condition Outputer[bool] // Keep the condition Outputer to bind later
 	ifTrue     func(Context) Outputer[Out]
 	_else      func(Context) Outputer[Out]
 }
 
+// genericNodeInitializer can be reused for If, Transform, etc.
 type genericNodeInitializer struct {
-	_id NodeTypeID
+	id NodeTypeID
 }
 
 func (g genericNodeInitializer) ID() NodeTypeID {
-	return g._id
+	return g.id
 }
 
 func (i *_if[Out]) Init() NodeInitializer {
-	return genericNodeInitializer{NodeTypeID("if")}
+	return genericNodeInitializer{id: "if"}
 }
 
+// Get for _if resolves the condition and executes the corresponding branch.
 func (i *_if[Out]) Get(ctx context.Context, condition bool) (Out, error) {
+	// The 'condition' input to Get is the *resolved* boolean value
+	var result Outputer[Out]
 	if condition {
-		return i.ifTrue(i.ctx).Out(&getter{})
+		result = i.ifTrue(i.ctx)
 	} else {
-		return i._else(i.ctx).Out(&getter{})
+		// Handle the case where _else might be nil (optional else)
+		if i._else == nil {
+			var zero Out
+			// Or return a specific error? Depends on desired semantics.
+			return zero, nil // Return zero value if no else branch
+		}
+		result = i._else(i.ctx)
 	}
+	// We need the correct ResolverContext to call Out on the chosen branch.
+	// Using placeholder getter for now.
+	return result.Out(&getter{}) // Potential issue: Where does getter come from?
 }
 
+// If defines a conditional node. It uses DefineNode internally.
 func If[Out any](
 	ctx Context,
 	nodeID NodeID,
 	condition Outputer[bool],
 	ifTrue func(Context) Outputer[Out],
-	_else func(Context) Outputer[Out],
+	_else func(Context) Outputer[Out], // Can be nil for if without else
 ) Outputer[Out] {
-	// TODO: Define node here
-	__if := &_if[Out]{ctx: ctx, _condition: condition, ifTrue: ifTrue, _else: _else}
-	return DefineNode(ctx, nodeID, __if).Bind(condition)
+	// Create the resolver instance for the If logic
+	ifResolver := &_if[Out]{
+		ctx:        ctx,
+		_condition: condition, // Store the Outputer[bool]
+		ifTrue:     ifTrue,
+		_else:      _else,
+	}
+
+	// Define the node. The input type is bool (the resolved condition).
+	nodeDefinition := DefineNode(ctx, nodeID, ifResolver)
+
+	// Bind the condition Outputer[bool] as the input to this If node.
+	return nodeDefinition.Bind(condition)
 }
 
 /*
@@ -185,10 +242,10 @@ func While[Out any](condition Condition, do func(WorkflowContext)) Output[Condit
 
 
 func FanOut[In, Out any](node Output[In, Out], fun func(Context, In)) []Output[In, Out] {
-	return nil
+    return nil
 }
 
 func ChainOfThought[In, Out, ROut any](n Output[In, Out], rewardModel NodeType[Out, ROut]) Output[In, Out] {
-	return nil
+    return nil
 }
 */
