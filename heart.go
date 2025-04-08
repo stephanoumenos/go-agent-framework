@@ -10,14 +10,21 @@ type NodeDefinition[In, Out any] interface {
 	Bind(Outputer[In]) Noder[In, Out]
 }
 
-type into[Out any] struct{ out Out }
+type into[Out any] struct {
+	out Out
+	err error
+}
 
 func (i *into[Out]) Out(ResolverContext) (Out, error) {
-	return i.out, nil
+	return i.out, i.err
 }
 
 func Into[Out any](out Out) Outputer[Out] {
 	return &into[Out]{out: out}
+}
+
+func IntoError[Out any](err error) Outputer[Out] {
+	return &into[Out]{err: err}
 }
 
 type NodeInitializer interface {
@@ -98,7 +105,7 @@ type Noder[In, Out any] interface {
 // --- FanIn Implementation ---
 
 type fanInResolver[Out any] struct {
-	fun func(ResolverContext) (Out, error)
+	fun func(ResolverContext) Outputer[Out]
 }
 
 type fanInInitializer struct{}
@@ -115,10 +122,10 @@ func (f *fanInResolver[Out]) Get(ctx context.Context, _ struct{}) (Out, error) {
 	// FanIn's logic depends on the ResolverContext, not the standard context.Context or input
 	// We might need a way to pass the correct ResolverContext here.
 	// Using a placeholder getter for now.
-	return f.fun(getter{}) // Potential issue: Where does getter come from?
+	return f.fun(getter{}).Out(getter{})
 }
 
-func FanIn[Out any](ctx Context, nodeID NodeID, fun func(ResolverContext) (Out, error)) Outputer[Out] {
+func FanIn[Out any](ctx Context, nodeID NodeID, fun func(ResolverContext) Outputer[Out]) Outputer[Out] {
 	resolver := &fanInResolver[Out]{fun: fun}
 	// FanIn doesn't conceptually have an input other than the context, so we bind struct{}{}
 	return DefineNode(ctx, nodeID, resolver).Bind(Into(struct{}{}))
