@@ -12,7 +12,7 @@ type NodeDefinition[In, Out any] interface {
 
 type into[Out any] struct{ out Out }
 
-func (i *into[Out]) Out(OutputerGetter) (Out, error) {
+func (i *into[Out]) Out(ResolverContext) (Out, error) {
 	return i.out, nil
 }
 
@@ -70,39 +70,26 @@ type InOut[In, Out any] struct {
 	Out Out
 }
 
-type InputerGetter interface {
-	child() *NodeID
-	heart()
-}
-
 type Inputer[In any] interface {
-	In(InputerGetter) (In, error)
-}
-
-type OutputerGetter interface {
-	child() *NodeID
-	heart()
+	In(ResolverContext) (In, error)
 }
 
 type Outputer[Out any] interface {
-	Out(OutputerGetter) (Out, error)
+	Out(ResolverContext) (Out, error)
 }
 
-type NoderGetter interface {
+type ResolverContext interface {
 	heart()
-	child() *NodeID
-	InputerGetter // TODO: Maybe always have an input and an output for simplicity?
-	OutputerGetter
 }
 
 type Noder[In, Out any] interface {
 	Inputer[In]
 	Outputer[Out]
-	InOut(NoderGetter) (InOut[In, Out], error)
+	InOut(ResolverContext) (InOut[In, Out], error)
 }
 
 type fanInResolver[Out any] struct {
-	fun func(NoderGetter) (Out, error)
+	fun func(ResolverContext) (Out, error)
 }
 
 type fanInInitializer struct{}
@@ -119,7 +106,7 @@ func (f *fanInResolver[Out]) Get(context.Context, struct{}) (Out, error) {
 	return f.fun(getter{})
 }
 
-func FanIn[Out any](ctx Context, nodeID NodeID, fun func(NoderGetter) (Out, error)) Outputer[Out] {
+func FanIn[Out any](ctx Context, nodeID NodeID, fun func(ResolverContext) (Out, error)) Outputer[Out] {
 	return DefineNode(ctx, nodeID, &fanInResolver[Out]{fun: fun}).Bind(Into(struct{}{}))
 }
 
@@ -129,7 +116,7 @@ type transform[In, Out any] struct {
 	fun func(context.Context, In) (Out, error)
 }
 
-func (t *transform[In, Out]) Out(nc OutputerGetter) (Out, error) {
+func (t *transform[In, Out]) Out(nc ResolverContext) (Out, error) {
 	var out Out
 	in, err := t.in.Out(nc)
 	if err != nil {
@@ -151,29 +138,29 @@ func UseConnector[Out any]() *connector[Out] { return nil }
 
 type _if[Out any] struct {
 	ctx        Context
-	nodeID     NodeID
 	_condition Outputer[bool]
 	ifTrue     func(Context) Outputer[Out]
 	_else      func(Context) Outputer[Out]
-	once       *sync.Once
-	out        Out
-	err        error
 }
 
-func (i *_if[Out]) Out(nc OutputerGetter) (Out, error) {
-	i.once.Do(func() {
-		var condition bool
-		condition, i.err = i._condition.Out(nc)
-		if i.err != nil {
-			return
-		}
-		if condition {
-			i.out, i.err = i.ifTrue(i.ctx).Out(nc)
-		} else {
-			i.out, i.err = i._else(i.ctx).Out(nc)
-		}
-	})
-	return i.out, i.err
+type genericNodeInitializer struct {
+	_id NodeTypeID
+}
+
+func (g genericNodeInitializer) ID() NodeTypeID {
+	return g._id
+}
+
+func (i *_if[Out]) Init() NodeInitializer {
+	return genericNodeInitializer{NodeTypeID("if")}
+}
+
+func (i *_if[Out]) Get(ctx context.Context, condition bool) (Out, error) {
+	if condition {
+		return i.ifTrue(i.ctx).Out(&getter{})
+	} else {
+		return i._else(i.ctx).Out(&getter{})
+	}
 }
 
 func If[Out any](
@@ -184,7 +171,8 @@ func If[Out any](
 	_else func(Context) Outputer[Out],
 ) Outputer[Out] {
 	// TODO: Define node here
-	return &_if[Out]{ctx: ctx, nodeID: nodeID, _condition: condition, ifTrue: ifTrue, _else: _else, once: &sync.Once{}}
+	__if := &_if[Out]{ctx: ctx, _condition: condition, ifTrue: ifTrue, _else: _else}
+	return DefineNode(ctx, nodeID, __if).Bind(condition)
 }
 
 /*

@@ -70,8 +70,8 @@ func WithTools(next heart.NodeDefinition[openai.ChatCompletionRequest, openai.Ch
 	return heart.DefineThinMiddleware(toolsMiddleware(tools), next)
 }
 
-func toolsMiddleware(tools []Tool) func(heart.NoderGetter, openai.ChatCompletionRequest, heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (openai.ChatCompletionResponse, error) {
-	return func(get heart.NoderGetter, ccr openai.ChatCompletionRequest, nd heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (openai.ChatCompletionResponse, error) {
+func toolsMiddleware(tools []Tool) func(heart.ResolverContext, openai.ChatCompletionRequest, heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (openai.ChatCompletionResponse, error) {
+	return func(get heart.ResolverContext, ccr openai.ChatCompletionRequest, nd heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (openai.ChatCompletionResponse, error) {
 		var out openai.ChatCompletionResponse
 		if len(ccr.Tools) > 0 {
 			return out, fmt.Errorf("error in openai tools middleware: %w", errToolsAlreadyDefined)

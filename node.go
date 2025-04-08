@@ -96,7 +96,7 @@ func (n *node[In, Out]) init(ctx Context) error {
 	return nil
 }
 
-func (o *node[In, Out]) get(nc NoderGetter) {
+func (o *node[In, Out]) get(nc ResolverContext) {
 	o.d.once.Do(func() {
 		if ok := o.d.ctx.scheduler.registerNode(o.d.id); !ok {
 			o.err = errors.New("node already defined with node id: " + string(o.d.id))
@@ -121,17 +121,17 @@ func (o *node[In, Out]) get(nc NoderGetter) {
 	})
 }
 
-func (o *node[In, Out]) In(nc InputerGetter) (In, error) {
+func (o *node[In, Out]) In(nc ResolverContext) (In, error) {
 	o.get(nc)
 	return o.inOut.In, o.err
 }
 
-func (o *node[In, Out]) Out(nc OutputerGetter) (Out, error) {
+func (o *node[In, Out]) Out(nc ResolverContext) (Out, error) {
 	o.get(nc)
 	return o.inOut.Out, o.err
 }
 
-func (o *node[In, Out]) InOut(nc NoderGetter) (InOut[In, Out], error) {
+func (o *node[In, Out]) InOut(nc ResolverContext) (InOut[In, Out], error) {
 	o.get(nc)
 	return o.inOut, o.err
 }
