@@ -1,3 +1,4 @@
+// ./examples/main.go
 package main
 
 import (
@@ -24,7 +25,7 @@ type QuestionAnswer struct {
 
 var systemMsg = `
 You are an AI trained to analyze anti-vegan messages and identify the core carnist arguments being made. When presented with a message, extract exactly three main carnist arguments that are either explicitly stated or implicitly present in the text.
-For each argument, provide a clear, concise description that captures the essential reasoning or claim being made. Focus on the underlying logic or justification being used to defend non-vegan practices, rather than just paraphrasing the surface-level statements.
+For each argument, provide a clear, concise description that captures the essential reasoning or claim being used to defend non-vegan practices, rather than just paraphrasing the surface-level statements.
 Your output must be structured in the JSON format specified by the provided schema.
 `
 
@@ -41,9 +42,8 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 		threeQuestions,
 		func(ctx context.Context, questions VeganQuestions) (goopenai.ChatCompletionRequest, error) {
 			return goopenai.ChatCompletionRequest{
-				Model:       goopenai.GPT4oMini,
-				MaxTokens:   2048,
-				Temperature: 1.000000,
+				Model:     goopenai.GPT4oMini,
+				MaxTokens: 2048,
 				Messages: []goopenai.ChatCompletionMessage{
 					{
 						Content: "You are the best vegan activist ever. Please debunk this non-vegan argument.",
@@ -71,7 +71,11 @@ func main() {
 
 	ctx := context.Background()
 
-	heart.Dependencies(openai.Inject(client))
+	err := heart.Dependencies(openai.Inject(client))
+	if err != nil {
+		fmt.Println("error setting dependencies: ", err)
+		return
+	}
 
 	fileStore, err := store.NewFileStore("workflows")
 	if err != nil {
@@ -81,19 +85,26 @@ func main() {
 
 	carnistDebunkerWorkflow := heart.DefineWorkflow(handleCarnism, heart.WithStore(fileStore))
 
-	answer, err := carnistDebunkerWorkflow.New(ctx, goopenai.ChatCompletionRequest{
+	// New is now non-blocking and returns a result handle
+	resultHandle := carnistDebunkerWorkflow.New(ctx, goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{
 			{Content: systemMsg, Role: goopenai.ChatMessageRoleSystem},
 			{Content: carnistUserMsg, Role: goopenai.ChatMessageRoleUser},
 		},
-		Model:       goopenai.GPT4oMini,
-		MaxTokens:   2048,
-		Temperature: 1.000000,
+		Model:     goopenai.GPT4oMini,
+		MaxTokens: 2048,
+		// Temperature: 1.000000, // Using default temperature
 	})
+
+	fmt.Println("Workflow started...")
+
+	// Block and wait for the result using Get()
+	answer, err := resultHandle.Get()
 	if err != nil {
 		fmt.Println("error running workflow: ", err)
 		return
 	}
+
 	fmt.Println("Success!")
 	fmt.Println(answer.Answer)
 }
