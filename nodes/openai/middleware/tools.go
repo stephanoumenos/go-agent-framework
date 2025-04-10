@@ -1,3 +1,4 @@
+// ./nodes/openai/middleware/tools.go
 package middleware
 
 import (
@@ -5,170 +6,303 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"heart"
+	"heart" // Use heart types
 
 	"github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
+// --- Errors ---
+
 var (
-	errToolsAlreadyDefined   = errors.New("tools already defined. please define only once")
-	errUnknownToolFromOpenAI = errors.New("openAI requested unknown tool")
+	// errToolsAlreadyDefined is returned if the input request already has tools defined.
+	errToolsAlreadyDefined = errors.New("tools already defined in the request")
+	// errUnknownToolFromOpenAI is returned if the LLM requests a tool not provided to the middleware.
+	errUnknownToolFromOpenAI = errors.New("openAI responded with an unknown tool function name")
+	// errToolExecutionFailed indicates an error during the execution of a defined tool.
+	errToolExecutionFailed = errors.New("tool execution failed")
+	// errToolArgumentParsingFailed indicates an error parsing arguments for a tool.
+	errToolArgumentParsingFailed = errors.New("failed to parse tool arguments")
+	// errDependencyNotSet indicates the OpenAI client dependency was not injected.
+	errDependencyNotSet = errors.New("openai client dependency not set in tools middleware")
 )
 
+// --- Tool Definition Interfaces/Structs (Mostly Unchanged) ---
+
+// Tool represents a function callable by the LLM.
 type Tool interface {
-	parseParams(map[string]string) (any, error)
-	defineTool() ToolDefinition
-	call(ctx context.Context, params any) (string, error)
+	// ParseParams parses the arguments map (usually string->any from JSON) into the specific parameter struct/type for the tool.
+	ParseParams(arguments map[string]any) (params any, err error)
+	// DefineTool returns the definition (name, description, parameters) used to register the tool with OpenAI.
+	DefineTool() ToolDefinition
+	// Call executes the tool's logic with the parsed parameters. Context is passed for potential cancellation/deadlines.
+	Call(ctx context.Context, params any) (result string, err error)
+	// Implement heart.NodeInitializer if the tool itself needs dependencies.
+	// Init() heart.NodeInitializer // Optional: Add if tools need DI
 }
 
-type ToolParam struct {
-	Description string
-	Enum        []string
-	IsRequired  bool
-}
-
+// ToolDefinition describes a tool for the OpenAI API.
 type ToolDefinition struct {
 	Name        string
 	Description string
-	Params      map[string]ToolParam
+	Parameters  jsonschema.Definition // Use go-openai's jsonschema type directly
 }
 
-type ToolDefiner[Params any] interface {
-	heart.NodeResolver[Params, string]
-	ParseParams(map[string]string) (Params, error)
-	DefineTool() ToolDefinition
+/*
+// Removed old tool[Params] struct and DefineTool wrapper as the interface Tool is used directly.
+// If you need a helper to create Tool implementations, you can add it back,
+// ensuring it adheres to the Tool interface. For now, users will implement the Tool interface directly.
+
+// Example implementation structure (user would provide this):
+type MyTool struct {
+	// Potentially dependencies injected via Init/DependencyInject
+}
+func (t *MyTool) defineTool() ToolDefinition { ... }
+func (t *MyTool) parseParams(arguments map[string]any) (any, error) { ... }
+func (t *MyTool) call(ctx context.Context, params any) (string, error) { ... }
+// Optional:
+// func (t *MyTool) Init() heart.NodeInitializer { ... }
+// func (t *MyTool) DependencyInject(dep MyDep) { ... }
+*/
+
+// --- Tools Middleware Resolver ---
+
+const toolsMiddlewareNodeTypeID heart.NodeTypeID = "openai:toolsMiddleware"
+
+// ToolsMiddlewareInitializer handles dependency injection for the resolver.
+type ToolsMiddlewareInitializer struct {
+	// This will hold the injected client.
+	client *openai.Client
 }
 
-type tool[Params any] struct {
-	definer ToolDefiner[Params]
+func (i *ToolsMiddlewareInitializer) ID() heart.NodeTypeID {
+	return toolsMiddlewareNodeTypeID
 }
 
-func (t *tool[Params]) parseParams(paramsMap map[string]string) (any, error) {
-	return t.definer.ParseParams(paramsMap)
+// DependencyInject receives the OpenAI client.
+func (i *ToolsMiddlewareInitializer) DependencyInject(client *openai.Client) {
+	i.client = client
 }
 
-func (t *tool[Params]) defineTool() ToolDefinition {
-	t.definer.Init()
-	// TODO: Add dependency injection here
-	return t.definer.DefineTool()
+// Ensure the initializer implements the necessary interfaces.
+var _ heart.NodeInitializer = (*ToolsMiddlewareInitializer)(nil)
+var _ heart.DependencyInjectable[*openai.Client] = (*ToolsMiddlewareInitializer)(nil)
+
+// toolsMiddlewareResolver implements NodeResolver and MiddlewareExecutor.
+type toolsMiddlewareResolver struct {
+	tools       []Tool
+	toolMap     map[string]Tool // Map tool name to Tool for quick lookup
+	initializer *ToolsMiddlewareInitializer
+	nodeTypeID  heart.NodeTypeID
+	// We keep nextDefinition for potential future config use, but execution ignores it.
+	nextDefinition heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]
 }
 
-func (t *tool[Params]) call(ctx context.Context, params any) (string, error) {
-	typedParams, ok := params.(Params)
-	if !ok {
-		return "", fmt.Errorf("TODO")
+// Ensure interfaces are implemented.
+var _ heart.NodeResolver[openai.ChatCompletionRequest, openai.ChatCompletionResponse] = (*toolsMiddlewareResolver)(nil)
+var _ heart.MiddlewareExecutor[openai.ChatCompletionRequest, openai.ChatCompletionResponse] = (*toolsMiddlewareResolver)(nil)
+
+// Init creates the initializer which handles dependency injection.
+func (r *toolsMiddlewareResolver) Init() heart.NodeInitializer {
+	// Initialize tool map here for efficiency
+	r.toolMap = make(map[string]Tool, len(r.tools))
+	for _, t := range r.tools {
+		// TODO: Handle potential dependency injection for Tools themselves here if needed.
+		// Call t.Init() if the Tool interface includes it.
+		// Perform injection using heart.dependencyInject(t.Init(), t.Init().ID()) ? Requires thought. Defer for v0.1.0.
+		def := t.DefineTool()
+		r.toolMap[def.Name] = t
 	}
-	return t.definer.Get(ctx, typedParams)
+
+	// Create and return the initializer that will receive the client dependency.
+	r.initializer = &ToolsMiddlewareInitializer{}
+	return r.initializer
 }
 
-func DefineTool[Params any](definer ToolDefiner[Params]) Tool {
-	return &tool[Params]{definer: definer}
+// Get is the placeholder implementation for NodeResolver.
+func (r *toolsMiddlewareResolver) Get(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+	var zero openai.ChatCompletionResponse
+	return zero, fmt.Errorf("internal error: toolsMiddlewareResolver.Get called directly for middleware type %s", r.nodeTypeID)
 }
 
-func WithTools(next heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse], tools ...Tool) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
-	return heart.DefineThinMiddleware(toolsMiddleware(tools), next)
-}
+// ExecuteMiddleware contains the core tool-handling logic.
+func (r *toolsMiddlewareResolver) ExecuteMiddleware(ctx context.Context, rctx heart.ResolverContext, originalReq openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+	// 1. Check if the client dependency was injected.
+	if r.initializer == nil || r.initializer.client == nil {
+		// This indicates a setup error (DI failed or Init wasn't called correctly).
+		return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s: %w", r.nodeTypeID, errDependencyNotSet)
+	}
+	client := r.initializer.client
 
-func toolsMiddleware(tools []Tool) func(heart.ResolverContext, openai.ChatCompletionRequest, heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (openai.ChatCompletionResponse, error) {
-	return func(get heart.ResolverContext, ccr openai.ChatCompletionRequest, nd heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) (openai.ChatCompletionResponse, error) {
-		var out openai.ChatCompletionResponse
-		if len(ccr.Tools) > 0 {
-			return out, fmt.Errorf("error in openai tools middleware: %w", errToolsAlreadyDefined)
+	// 2. Check if tools are already defined in the input request.
+	// We manage tools exclusively within this middleware.
+	if len(originalReq.Tools) > 0 {
+		return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s: %w", r.nodeTypeID, errToolsAlreadyDefined)
+	}
+
+	// 3. Prepare the initial API request.
+	currentReq := originalReq                                // Start with the request passed to the middleware.
+	currentReq.Messages = copyMessages(originalReq.Messages) // Work on a copy to avoid modifying the input slice directly.
+
+	// Format tools for the *first* API call.
+	apiTools := make([]openai.Tool, 0, len(r.tools))
+	for _, tool := range r.tools {
+		toolDef := tool.DefineTool()
+		openAIFuncDef := openai.FunctionDefinition{
+			Name:        toolDef.Name,
+			Description: toolDef.Description,
+			Parameters:  toolDef.Parameters, // This assumes our Parameters field is already the correct jsonschema.Definition type
 		}
-		openaiTools := make([]openai.Tool, 0, len(tools))
-		toolRefs := make(map[string]Tool, len(tools)) // ToolID -> Tool
-		for _, tool := range tools {
-			tool := tool // Just in case for older Go versions
-			def := tool.defineTool()
-			toolRefs[def.Name] = tool
-			paramProperties := make(map[string]jsonschema.Definition, len(def.Params))
-			requiredParams := make([]string, 0)
-			for paramID, paramDef := range def.Params {
-				paramProperties[paramID] = jsonschema.Definition{
-					Type:        jsonschema.String,
-					Description: paramDef.Description,
-					Enum:        paramDef.Enum,
-				}
-				if paramDef.IsRequired {
-					requiredParams = append(requiredParams, paramID)
-				}
+		apiTools = append(apiTools, openai.Tool{
+			Type:     openai.ToolTypeFunction,
+			Function: &openAIFuncDef, // Directly use the definition structure
+		})
+	}
+	currentReq.Tools = apiTools
+	// We only send ToolChoice="auto" (the default) or what the user specified.
+	// If user wants a specific tool forced, they set currentReq.ToolChoice
+	// Note: After the first call, the `Tools` parameter should NOT be sent again according to OpenAI docs.
+
+	// 4. Start the tool execution loop.
+	const maxToolIterations = 10 // Safety break to prevent infinite loops
+	var finalResp openai.ChatCompletionResponse
+
+	for i := 0; i < maxToolIterations; i++ {
+
+		// Make the actual API call using the injected client.
+		resp, err := client.CreateChatCompletion(ctx, currentReq)
+		if err != nil {
+			return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s during OpenAI call: %w", r.nodeTypeID, err)
+		}
+		// Store the latest response in case we break loop without tool calls
+		finalResp = resp
+
+		// Check for errors in choices
+		if len(resp.Choices) == 0 {
+			return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s: OpenAI response contained no choices", r.nodeTypeID)
+		}
+		message := resp.Choices[0].Message
+
+		// Check if the response contains tool calls.
+		toolCalls := message.ToolCalls
+		if len(toolCalls) == 0 {
+			// No tool calls, this is the final response from the LLM.
+			return finalResp, nil // Exit the loop and return the response.
+		}
+
+		// --- Process Tool Calls ---
+
+		// Append the assistant's message (containing tool calls) to the history for the next request.
+		currentReq.Messages = append(currentReq.Messages, message)
+
+		// Execute tools and collect results.
+		toolResponseMessages := make([]openai.ChatCompletionMessage, 0, len(toolCalls))
+		for _, toolCall := range toolCalls {
+			if toolCall.Type != openai.ToolTypeFunction {
+				continue // Ignore non-function tool calls if any occur.
 			}
-			openaiTools = append(openaiTools, openai.Tool{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        def.Name,
-					Description: def.Description,
-					Parameters: jsonschema.Definition{
-						Type:       jsonschema.Object,
-						Properties: paramProperties,
-						Required:   requiredParams,
-					},
-				},
+			functionCall := toolCall.Function
+			tool, exists := r.toolMap[functionCall.Name]
+			if !exists {
+				return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s: %w: %s", r.nodeTypeID, errUnknownToolFromOpenAI, functionCall.Name)
+			}
+
+			// Parse arguments string into a map.
+			var arguments map[string]any
+			err := json.Unmarshal([]byte(functionCall.Arguments), &arguments)
+			if err != nil {
+				return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s: failed to unmarshal arguments for tool %s: %w. Arguments: %s",
+					r.nodeTypeID, functionCall.Name, err, functionCall.Arguments)
+			}
+
+			// Use the tool's specific parser.
+			parsedParams, err := tool.ParseParams(arguments)
+			if err != nil {
+				// Consider maybe appending an error message back to the LLM instead of failing hard?
+				// For now, fail hard.
+				return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s: %w for tool %s: %w", r.nodeTypeID, errToolArgumentParsingFailed, functionCall.Name, err)
+			}
+
+			// Execute the tool.
+			// TODO: Consider adding observability/logging for tool calls here.
+			toolResult, err := tool.Call(ctx, parsedParams)
+			if err != nil {
+				// Consider appending an error message back. Fail hard for now.
+				return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s: %w for tool %s: %w", r.nodeTypeID, errToolExecutionFailed, functionCall.Name, err)
+
+			}
+
+			// Append the tool's result message.
+			toolResponseMessages = append(toolResponseMessages, openai.ChatCompletionMessage{
+				Role:       openai.ChatMessageRoleTool,
+				Content:    toolResult,
+				Name:       functionCall.Name,
+				ToolCallID: toolCall.ID,
 			})
 		}
-		ccr.Tools = openaiTools
 
-		resp, err := nd.Bind(heart.Into(ccr)).Out(get)
-		if err != nil {
-			return out, err
-		}
-		toolCalls := resp.Choices[0].Message.ToolCalls
-		toolsCalled := len(toolCalls)
-		// TODO: Add a few more checks here
-		for toolsCalled > 0 {
-			for _, toolCall := range toolCalls {
-				tool, ok := toolRefs[toolCall.Function.Name]
-				if !ok {
-					return out, fmt.Errorf("error in openai tools middleware: %w", errUnknownToolFromOpenAI)
-				}
-				// TODO: Parse JSON here.
-				var functionArguments map[string]interface{}
-				if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &functionArguments); err != nil {
-					return out, err
-				}
+		// Add all tool responses to the message history for the next iteration.
+		currentReq.Messages = append(currentReq.Messages, toolResponseMessages...)
 
-				paramsMap := make(map[string]string)
-				for key, value := range functionArguments {
-					switch v := value.(type) {
-					case string:
-						paramsMap[key] = v
-					case float64:
-						paramsMap[key] = fmt.Sprintf("%v", v)
-					case bool:
-						paramsMap[key] = fmt.Sprintf("%v", v)
-					case nil:
-						paramsMap[key] = ""
-					default:
-						return out, errors.New("nested object found: value for key '" + key + "' is not a simple type")
-					}
-				}
+		// Remove Tools and ToolChoice for subsequent calls as per OpenAI guidance.
+		currentReq.Tools = nil
+		currentReq.ToolChoice = nil
 
-				params, err := tool.parseParams(paramsMap)
-				if err != nil {
-					return out, err
-				}
-
-				toolOut, err := tool.call(context.TODO(), params)
-				if err != nil {
-					return out, err
-				}
-				ccr.Messages = append(ccr.Messages, openai.ChatCompletionMessage{
-					Role:       openai.ChatMessageRoleTool,
-					Content:    toolOut,
-					Name:       toolCall.Function.Name,
-					ToolCallID: toolCall.ID,
-				})
-			}
-
-			resp, err := nd.Bind(heart.Into(ccr)).Out(get)
-			if err != nil {
-				return out, err
-			}
-			toolCalls = resp.Choices[0].Message.ToolCalls
-			toolsCalled = len(toolCalls)
-		}
-
-		return resp, nil
+		// Continue loop to call LLM again with tool results...
 	}
+
+	// If loop finishes due to max iterations, return the last response received.
+	// This indicates a potential problem (e.g., LLM stuck in a tool loop).
+	// We might want to return an error or wrap the response here.
+	// For now, just return the last response. User should check FinishReason.
+	fmt.Printf("WARN: Tool execution loop reached max iterations (%d) in %s.\n", maxToolIterations, r.nodeTypeID)
+	return finalResp, nil
+
+}
+
+// copyMessages creates a new slice and copies message content.
+// Needed to avoid appending to the original request's message slice.
+func copyMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	newMessages := make([]openai.ChatCompletionMessage, len(messages))
+	copy(newMessages, messages)
+	return newMessages
+}
+
+// --- Middleware Constructor Function ---
+
+// WithTools defines a NodeDefinition that wraps another ChatCompletion node definition (primarily for config)
+// and injects tool calling capabilities. It manages the loop of calling the LLM and tools internally.
+func WithTools(
+	ctx heart.Context, // Context for definition.
+	nodeID heart.NodeID, // ID for this middleware node instance.
+	// Keep 'next' for potential config sourcing, but document its limited role.
+	next heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
+	tools ...Tool, // Tools to make available.
+) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] { // Input/Output types remain the same.
+
+	if len(tools) == 0 {
+		// If no tools are provided, this middleware is a no-op, return the next definition directly.
+		// Or maybe return an error? Returning next seems simpler.
+		// Let's return next to avoid breaking chains if tools are conditionally empty.
+		// Note: This bypasses creating a node for the middleware itself.
+		// If tracking the middleware node even when empty is desired, define it anyway
+		// with logic that just passes through. For now, let's pass through.
+		fmt.Printf("WARN: WithTools called with no tools for nodeID %s. Middleware is bypassed.\n", nodeID)
+		return next
+	}
+
+	resolver := &toolsMiddlewareResolver{
+		tools:          tools,
+		nodeTypeID:     toolsMiddlewareNodeTypeID,
+		nextDefinition: next, // Store for potential config use, though execution is direct.
+	}
+
+	// Use heart.DefineNode to create the middleware node definition.
+	middlewareNodeDefinition := heart.DefineNode[openai.ChatCompletionRequest, openai.ChatCompletionResponse](
+		ctx,
+		nodeID,
+		resolver,
+	)
+
+	return middlewareNodeDefinition
 }

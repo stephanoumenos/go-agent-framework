@@ -389,7 +389,7 @@ func (o *node[In, Out]) get(nc ResolverContext) {
 		// Check if the resolver implements the MiddlewareExecutor interface
 		if mwExecutor, ok := o.d.resolver.(MiddlewareExecutor[In, Out]); ok {
 			// It's middleware! Execute using the special method that takes ResolverContext.
-			executionOutput, o.err = mwExecutor.ExecuteMiddleware(nc, o.inOut.In) // Pass nc!
+			executionOutput, o.err = mwExecutor.ExecuteMiddleware(o.d.ctx.ctx, nc, o.inOut.In) // Pass nc!
 		} else {
 			// Standard node resolver, use the context from definition ctx (o.d.ctx.ctx) for Get
 			executionOutput, o.err = o.d.resolver.Get(o.d.ctx.ctx, o.inOut.In)

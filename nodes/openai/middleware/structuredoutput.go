@@ -55,7 +55,7 @@ func (r *structuredOutputResolver[SOut]) Get(ctx context.Context, in openai.Chat
 
 // ExecuteMiddleware implements the MiddlewareExecutor interface.
 // This is where the actual middleware logic resides, using the provided ResolverContext.
-func (r *structuredOutputResolver[SOut]) ExecuteMiddleware(rctx heart.ResolverContext, in openai.ChatCompletionRequest) (SOut, error) {
+func (r *structuredOutputResolver[SOut]) ExecuteMiddleware(ctx context.Context, rctx heart.ResolverContext, in openai.ChatCompletionRequest) (SOut, error) {
 	var sOut SOut // Target struct for the output
 
 	// 1. Check for existing ResponseFormat

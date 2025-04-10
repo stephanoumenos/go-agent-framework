@@ -1,61 +1,10 @@
 package heart
 
+import "context"
+
 // MiddlewareExecutor defines an interface for node resolvers that represent middleware.
 // Middleware often needs the richer ResolverContext during execution to interact
 // with other nodes (like the 'next' node it wraps).
 type MiddlewareExecutor[In, Out any] interface {
-	ExecuteMiddleware(rctx ResolverContext, in In) (Out, error)
-}
-
-/* Stateful middleware */
-
-/* Thin middleware */
-
-type thinMiddlewareDefinition[In, Out, NewOut any] struct {
-	middleware func(ResolverContext, In, NodeDefinition[In, Out]) (NewOut, error)
-	next       NodeDefinition[In, Out]
-}
-
-type thinMiddleware[In, Out any] struct {
-	inOut InOut[In, Out]
-	get   func(ResolverContext)
-	err   error
-}
-
-func (l *thinMiddleware[In, Out]) InOut(nc ResolverContext) (InOut[In, Out], error) {
-	// TODO: only call get only
-	// Not too necessary for lightMiddleware but might make a difference for high RPS
-	l.get(nc)
-	return l.inOut, l.err
-}
-
-func (l *thinMiddleware[In, Out]) In(nc ResolverContext) (In, error) {
-	l.get(nc)
-	return l.inOut.In, l.err
-}
-
-func (l *thinMiddleware[In, Out]) Out(nc ResolverContext) (Out, error) {
-	l.get(nc)
-	return l.inOut.Out, l.err
-}
-
-func (m *thinMiddlewareDefinition[In, Out, NewOut]) heart() {}
-
-func (m *thinMiddlewareDefinition[In, Out, NewOut]) Bind(in Outputer[In]) Noder[In, NewOut] {
-	lm := &thinMiddleware[In, NewOut]{inOut: InOut[In, NewOut]{}}
-	lm.get = func(nc ResolverContext) {
-		lm.inOut.In, lm.err = in.Out(nc)
-		if lm.err != nil {
-			return
-		}
-		lm.inOut.Out, lm.err = m.middleware(nc, lm.inOut.In, m.next)
-	}
-	return lm
-}
-
-func DefineThinMiddleware[In, Out, NewOut any](
-	middleware func(getter ResolverContext, in In, next NodeDefinition[In, Out]) (NewOut, error),
-	next NodeDefinition[In, Out],
-) NodeDefinition[In, NewOut] {
-	return &thinMiddlewareDefinition[In, Out, NewOut]{middleware: middleware, next: next}
+	ExecuteMiddleware(ctx context.Context, rctx ResolverContext, in In) (Out, error)
 }
