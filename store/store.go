@@ -30,16 +30,16 @@ type GraphStore interface {
 	ListGraphs(ctx context.Context) ([]string, error)
 
 	// Node operations
-	AddNode(ctx context.Context, graphID, nodeID string, data map[string]any) error
-	GetNode(ctx context.Context, graphID, nodeID string) (map[string]any, error)
-	UpdateNode(ctx context.Context, graphID, nodeID string, data map[string]any, merge bool) error
+	AddNode(ctx context.Context, graphID, nodePath string, data map[string]any) error
+	GetNode(ctx context.Context, graphID, nodePath string) (map[string]any, error)
+	UpdateNode(ctx context.Context, graphID, nodePath string, data map[string]any, merge bool) error
 	ListNodes(ctx context.Context, graphID string) ([]string, error)
 
 	// Content operations
-	SetNodeRequestContent(ctx context.Context, graphID, nodeID string, content any, forceEmbed bool) (string, error)
-	GetNodeRequestContent(ctx context.Context, graphID, nodeID string) (any, *ContentRef, error)
-	SetNodeResponseContent(ctx context.Context, graphID, nodeID string, content any, forceEmbed bool) (string, error)
-	GetNodeResponseContent(ctx context.Context, graphID, nodeID string) (any, *ContentRef, error)
+	SetNodeRequestContent(ctx context.Context, graphID, nodePath string, content any, forceEmbed bool) (string, error)
+	GetNodeRequestContent(ctx context.Context, graphID, nodePath string) (any, *ContentRef, error)
+	SetNodeResponseContent(ctx context.Context, graphID, nodePath string, content any, forceEmbed bool) (string, error)
+	GetNodeResponseContent(ctx context.Context, graphID, nodePath string) (any, *ContentRef, error)
 }
 
 // ContentRef represents either embedded or externally stored content
