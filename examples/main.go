@@ -32,9 +32,16 @@ Your output must be structured in the JSON format specified by the provided sche
 var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
 
 func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.Outputer[QuestionAnswer] {
-	threeQuestions := openaimiddleware.WithStructuredOutput[VeganQuestions](
-		openai.CreateChatCompletion(ctx, "three-questions"),
-	).Bind(heart.Into(in))
+	threeQuestionsLLMNode := openai.CreateChatCompletion(ctx, "three-questions-llm")
+
+	threeQuestionsMiddlewareDef := openaimiddleware.WithStructuredOutput[VeganQuestions](
+		ctx,                     // Pass the current context
+		"parse-three-questions", // Give the middleware step a unique ID within this context
+		threeQuestionsLLMNode,   // Tell the middleware which node definition to wrap
+	)
+	// Bind the initial input to the *middleware* definition.
+	// This returns the Noder for the middleware step.
+	threeQuestions := threeQuestionsMiddlewareDef.Bind(heart.Into(in)) // Outputer[VeganQuestions]
 
 	firstQuestionRequest := heart.Transform(
 		ctx,
@@ -57,9 +64,14 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 			}, nil
 		})
 
-	answerToFirstQuestion := openaimiddleware.WithStructuredOutput[QuestionAnswer](
-		openai.CreateChatCompletion(ctx, "first-question-answer"),
-	).Bind(firstQuestionRequest)
+	firstQuestionAnswerLLMNode := openai.CreateChatCompletion(ctx, "first-question-answer-llm") // Node for the actual LLM call
+	answerToFirstQuestionMiddlewareDef := openaimiddleware.WithStructuredOutput[QuestionAnswer](
+		ctx,                        // Pass the current context
+		"parse-first-answer",       // Give the middleware step a unique ID
+		firstQuestionAnswerLLMNode, // Tell the middleware to wrap the second LLM call
+	)
+	// Bind the request (output of the transform) to the *second middleware* definition.
+	answerToFirstQuestion := answerToFirstQuestionMiddlewareDef.Bind(firstQuestionRequest) // Outputer[QuestionAnswer]
 
 	return answerToFirstQuestion
 }

@@ -386,8 +386,14 @@ func (o *node[In, Out]) get(nc ResolverContext) {
 
 		// 7. Execute the Node's Core Logic using the resolved input.
 		var executionOutput Out
-		// Pass the context from the definition's context
-		executionOutput, o.err = o.d.resolver.Get(o.d.ctx.ctx, o.inOut.In)
+		// Check if the resolver implements the MiddlewareExecutor interface
+		if mwExecutor, ok := o.d.resolver.(MiddlewareExecutor[In, Out]); ok {
+			// It's middleware! Execute using the special method that takes ResolverContext.
+			executionOutput, o.err = mwExecutor.ExecuteMiddleware(nc, o.inOut.In) // Pass nc!
+		} else {
+			// Standard node resolver, use the context from definition ctx (o.d.ctx.ctx) for Get
+			executionOutput, o.err = o.d.resolver.Get(o.d.ctx.ctx, o.inOut.In)
+		}
 		if o.err != nil {
 			o.status = nodeStatusError // Mark as error before defer runs.
 			// --- Use o.d.path ---
