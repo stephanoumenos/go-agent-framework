@@ -1,8 +1,7 @@
-// ./nodes/openai/middleware/structuredoutput.go
 package middleware
 
 import (
-	"context" // Keep standard context for Get method signature
+	"context" // Keep standard context
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 )
 
 // TODO: Maybe export this from heart
+// genericNodeInitializer remains useful
 type genericNodeInitializer struct {
 	id heart.NodeTypeID
 }
@@ -29,13 +29,16 @@ var errNoContentFromLLM = errors.New("no content received from LLM response")
 
 // structuredOutputResolver implements both heart.NodeResolver and heart.MiddlewareExecutor.
 type structuredOutputResolver[SOut any] struct {
+	// Store the *definition* of the next node. This allows the middleware
+	// to *bind* the modified request to the next node definition during execution.
 	nextDefinition heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]
 	nodeTypeID     heart.NodeTypeID
 }
 
 // Ensure interfaces are implemented (compile-time check)
+// Note: Output type of NodeResolver is now SOut, matching the middleware's final output type.
 var _ heart.NodeResolver[openai.ChatCompletionRequest, any] = (*structuredOutputResolver[any])(nil)
-var _ heart.MiddlewareExecutor[openai.ChatCompletionRequest, any] = (*structuredOutputResolver[any])(nil)
+var _ heart.MiddlewareExecutor[openai.ChatCompletionRequest, any] = (*structuredOutputResolver[any])(nil) // Output is 'any' due to generic SOut
 
 // Init returns the initializer providing the NodeTypeID for this middleware.
 func (r *structuredOutputResolver[SOut]) Init() heart.NodeInitializer {
@@ -44,18 +47,17 @@ func (r *structuredOutputResolver[SOut]) Init() heart.NodeInitializer {
 }
 
 // Get implements the standard NodeResolver interface.
-// This method should ideally not be called directly if the MiddlewareExecutor interface is detected by node.get.
-// It returns zero values and an error to indicate misuse.
+// This method is less likely to be called directly in the eager model,
+// but it should ideally perform the same logic as ExecuteMiddleware
+// for consistency if somehow invoked via Get.
 func (r *structuredOutputResolver[SOut]) Get(ctx context.Context, in openai.ChatCompletionRequest) (SOut, error) {
-	var zero SOut
-	// Log or handle this unexpected call if necessary
-	// fmt.Printf("WARN: structuredOutputResolver.Get called directly for node type %s\n", r.nodeTypeID)
-	return zero, fmt.Errorf("internal error: structuredOutputResolver.Get called directly for middleware type %s", r.nodeTypeID)
+	// Delegate to ExecuteMiddleware to avoid code duplication.
+	return r.ExecuteMiddleware(ctx, in)
 }
 
 // ExecuteMiddleware implements the MiddlewareExecutor interface.
-// This is where the actual middleware logic resides, using the provided ResolverContext.
-func (r *structuredOutputResolver[SOut]) ExecuteMiddleware(ctx context.Context, rctx heart.ResolverContext, in openai.ChatCompletionRequest) (SOut, error) {
+// This is where the actual middleware logic resides.
+func (r *structuredOutputResolver[SOut]) ExecuteMiddleware(ctx context.Context, in openai.ChatCompletionRequest) (SOut, error) {
 	var sOut SOut // Target struct for the output
 
 	// 1. Check for existing ResponseFormat
@@ -73,25 +75,28 @@ func (r *structuredOutputResolver[SOut]) ExecuteMiddleware(ctx context.Context, 
 
 	// 3. Modify the *incoming* request (`in`) to include the schema.
 	// NOTE: This modifies the `in` struct that was passed.
-	// If the original request object needs to be preserved elsewhere, a deep copy should be made before modification.
-	// For typical middleware chains, modifying is often intended.
-	in.ResponseFormat = &openai.ChatCompletionResponseFormat{
+	// Create a deep copy if the original request object needs to be preserved.
+	modifiedReq := in // Create a copy to modify (shallow copy ok for top level)
+	modifiedReq.ResponseFormat = &openai.ChatCompletionResponseFormat{
 		Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
 		JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
 			Name:   "output", // This name likely needs to match instruction in prompt
 			Schema: schema,
-			Strict: true,
+			// Strict mode can be demanding, maybe make optional?
+			// Strict: true,
 		},
 	}
+	// If Messages is a slice, ensure it's copied if modification is needed (not needed here)
+	// modifiedReq.Messages = make([]openai.ChatCompletionMessage, len(in.Messages))
+	// copy(modifiedReq.Messages, in.Messages)
 
 	// 4. Execute the *next* node in the chain.
-	// Bind the *modified* input request (`in`) to the `next` node's definition.
-	// This creates the runtime instance (Noder) for the actual LLM call.
-	llmNoder := r.nextDefinition.Bind(heart.Into(in))
+	// Bind the *modified* input request (`modifiedReq`) to the `next` node's definition.
+	// This creates the runtime instance (Noder) for the actual LLM call and starts its execution.
+	llmNoder := r.nextDefinition.Bind(heart.Into(modifiedReq)) // Bind returns Noder
 
-	// Call Out on the next node, passing the crucial ResolverContext (rctx).
-	// This triggers the execution of the underlying LLM call node.
-	llmResponse, err := llmNoder.Out(rctx)
+	// Call Out on the next node Noder. This now blocks until the LLM call completes.
+	llmResponse, err := llmNoder.Out()
 	if err != nil {
 		// If the underlying LLM call fails, propagate the error.
 		return sOut, fmt.Errorf("error from underlying node wrapped by %s: %w", r.nodeTypeID, err)
@@ -115,7 +120,7 @@ func (r *structuredOutputResolver[SOut]) ExecuteMiddleware(ctx context.Context, 
 		// If unmarshaling fails, it means the LLM didn't adhere to the schema.
 		// You might want to log the invalid content here for debugging.
 		// fmt.Printf("DEBUG: Failed to unmarshal content in %s: %s\n", r.nodeTypeID, llmContent)
-		return sOut, fmt.Errorf("error in %s: failed to unmarshal LLM response into %T: %w", r.nodeTypeID, sOut, err)
+		return sOut, fmt.Errorf("error in %s: failed to unmarshal LLM response into %T: %w. Content: %s", r.nodeTypeID, sOut, err, llmContent)
 	}
 
 	// 7. Return the successfully parsed struct.
@@ -126,7 +131,6 @@ func (r *structuredOutputResolver[SOut]) ExecuteMiddleware(ctx context.Context, 
 
 // WithStructuredOutput defines a NodeDefinition that wraps another ChatCompletion node
 // to enforce structured JSON output matching the SOut type.
-// It now requires a heart.Context and a heart.NodeID to place the middleware node correctly in the graph.
 func WithStructuredOutput[SOut any](
 	ctx heart.Context, // Context to define the node within (provides BasePath)
 	nodeID heart.NodeID, // Local ID for this middleware node instance
@@ -140,20 +144,8 @@ func WithStructuredOutput[SOut any](
 	}
 
 	// Use heart.DefineNode to create the actual NodeDefinition for this middleware instance.
-	// This correctly sets up the node's path, context, and associates the resolver.
 	// The input type is ChatCompletionRequest, the output type is SOut.
 	middlewareNodeDefinition := heart.DefineNode[openai.ChatCompletionRequest, SOut](ctx, nodeID, resolver)
 
 	return middlewareNodeDefinition
 }
-
-// Remove the old DefineThinMiddleware and related structs from this file if they were here.
-// The new approach uses DefineNode with a custom resolver implementing MiddlewareExecutor.
-
-/*
-// OLD CODE TO BE REMOVED from this file (if present):
-func DefineThinMiddleware(...) ...
-type thinMiddlewareDefinition struct { ... }
-type thinMiddleware struct { ... }
-func structuredOutputMiddleware(...) ... // Logic is moved into structuredOutputResolver.ExecuteMiddleware
-*/

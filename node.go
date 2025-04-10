@@ -6,6 +6,7 @@ import (
 	"heart/store"
 	"sync"
 	"time"
+	// Import standard context
 )
 
 // node represents the runtime state and execution logic for a single node within a workflow graph.
@@ -24,6 +25,13 @@ type node[In, Out any] struct {
 	completedAt          time.Time
 	isTerminal           bool
 	childrenMtx          sync.Mutex
+
+	// --- New fields for eager execution ---
+	execOnce  sync.Once     // Ensures get() runs only once per node *instance*
+	resultOut Out           // Stores the final output value
+	resultErr error         // Stores the final execution error
+	doneCh    chan struct{} // Channel closed when get() completes
+	// --- End new fields ---
 }
 
 // nodeStatus represents the lifecycle state of a node.
@@ -56,7 +64,7 @@ func (n *node[In, Out]) fromNodeState(state *nodeState) {
 	} else {
 		n.err = nil // Ensure error is nil if not present in state
 	}
-	// Note: isTerminal state is loaded in nodeStateFromMap and might be used elsewhere if needed.
+	n.isTerminal = state.IsTerminal // Load isTerminal state
 }
 
 // updateStoreNode persists the current node state (status, errors) to the store.
@@ -128,14 +136,17 @@ func (n *node[In, Out]) completeNode() error {
 		// --- Use n.d.path ---
 		errorMsg := fmt.Sprintf("CRITICAL: Failed to update final node state (%s) for node %s: %v", n.status, n.d.path, updateErr)
 		fmt.Println(errorMsg) // Log appropriately
-		// Return combined error info if possible.
+		// Update n.err to reflect this critical failure BEFORE storing it in resultErr.
 		if originalErr != nil {
-			return fmt.Errorf("%s (original error: %w)", errorMsg, originalErr)
+			n.err = fmt.Errorf("%s (original error: %w)", errorMsg, originalErr)
+		} else {
+			n.err = errors.New(errorMsg)
 		}
-		return errors.New(errorMsg)
+		return n.err // Return the combined/new error
 	}
 
-	// If execution was successful, attempt to persist the output content.
+	// If execution was successful (status is Complete and originalErr was nil),
+	// attempt to persist the output content.
 	if n.status == nodeStatusComplete && originalErr == nil {
 		var saveRespErr error
 		// --- Use string(n.d.path) for store interaction ---
@@ -153,18 +164,23 @@ func (n *node[In, Out]) completeNode() error {
 			fmt.Println(errorMsg) // Log appropriately
 			n.outputPersistenceErr = saveRespErr.Error()
 			// Need to update the store again to save the outputPersistenceErr state.
-			_ = n.updateStoreNode()
+			persistErrUpdate := n.updateStoreNode()
+			if persistErrUpdate != nil {
+				// If saving the persistence error fails, log it but don't overwrite n.err
+				fmt.Printf("CRITICAL: Failed to update store with output persistence error for node %s: %v\n", n.d.path, persistErrUpdate)
+				// Combine this critical error with the original saveRespErr? Maybe too complex. Log is important.
+				// We still return originalErr (nil) as execution succeeded.
+			}
 			// We still return originalErr (which is nil here) because execution succeeded.
 		}
 	}
 
 	// Return the original execution error (nil if successful).
+	// Note: n.err might have been updated if updateStoreNode failed critically.
 	return originalErr
 }
 
 // safeAssert performs a type assertion.
-// Note: This is basic; real-world use with `any` might need more robust handling,
-// especially if `val` comes from JSON unmarshaling (often map[string]any).
 func safeAssert[T any](val any) (T, bool) {
 	typedVal, ok := val.(T)
 	return typedVal, ok
@@ -172,6 +188,7 @@ func safeAssert[T any](val any) (T, bool) {
 
 // init initializes the node, loading state and content from the store if it exists,
 // or defining it as new otherwise. It also handles dependency injection.
+// This runs within the execOnce.Do block in get().
 func (n *node[In, Out]) init(ctx Context) error {
 	// 1. Initialize dependencies via the resolver.
 	initErr := n.d.init() // Calls dependencyInject
@@ -293,23 +310,41 @@ func (n *node[In, Out]) init(ctx Context) error {
 }
 
 // get drives the node's execution lifecycle, ensuring it runs only once per instance
-// and handles loading/saving state correctly.
-func (o *node[In, Out]) get(nc ResolverContext) {
-	o.d.once.Do(func() {
+// and handles loading/saving state correctly. It runs in a goroutine launched by Bind.
+// It takes no arguments.
+func (o *node[In, Out]) get() {
+	o.execOnce.Do(func() {
+		// Ensure doneCh is closed upon completion or panic
+		defer close(o.doneCh)
+
+		// Ensure final results are stored before doneCh is closed.
+		// This deferred function captures the final state of o.inOut.Out and o.err.
+		defer func() {
+			// If completeNode encountered a critical error updating the store,
+			// n.err would have been updated. We store that final n.err.
+			o.resultOut = o.inOut.Out
+			o.resultErr = o.err // Store the final error state.
+		}()
+
 		// Register node with scheduler (for potential graph analysis/visualization).
 		// NOTE: The scheduler currently expects NodeID. We are passing the full NodePath cast to NodeID.
 		// This might need adjustment in the scheduler logic later if it's intended to only track local NodeIDs.
 		// For now, casting keeps the call valid based on the current signature.
+		// TODO: Review scheduler interaction with NodePath later.
 		_ = o.d.ctx.scheduler.registerNode(NodeID(o.d.path))
 
 		// 1. Initialize Node: Load from store or define new. Handles deps.
 		if initErr := o.init(o.d.ctx); initErr != nil {
-			return // Init failed, error and status are set.
+			// o.err and o.status already set by init()
+			return // Exit Do block, deferred close(doneCh) and result storage will run.
 		}
 
 		// 2. Check if Execution is Needed: If loaded as Complete/Error, skip run.
 		if o.status == nodeStatusComplete || o.status == nodeStatusError {
-			return
+			// If loaded as complete, ensure results are populated for Out() calls.
+			// If loaded as error, ensure error is populated.
+			// This is handled by init() loading content or setting o.err.
+			return // Exit Do block.
 		}
 		// Status must be Defined at this point.
 
@@ -320,26 +355,30 @@ func (o *node[In, Out]) get(nc ResolverContext) {
 			o.err = fmt.Errorf("failed to set node %s to running state in store: %w", o.d.path, runErr)
 			o.status = nodeStatusError
 			_ = o.updateStoreNode() // Attempt to save error state.
-			return
+			return                  // Exit Do block.
 		}
 
 		// 4. Defer Finalization: Ensure completeNode runs to set final state/save output.
 		defer func() {
 			// completeNode handles final status update and output saving.
-			// We log any error during completion handling itself for diagnostics.
-			if completionErr := o.completeNode(); completionErr != nil {
-				// --- Use o.d.path ---
-				fmt.Printf("ERROR: Error during node completion handling for %s: %v (Execution error was: %v)\n", o.d.path, completionErr, o.err)
-			}
-		}() // End defer
+			// It returns the original execution error (or nil).
+			// If completeNode itself fails critically (e.g., cannot update store),
+			// it updates o.err internally.
+			_ = o.completeNode() // We don't need the returned originalErr here.
+			// The final o.err is captured by the outer defer for resultErr.
+		}() // End defer completeNode
 
 		// --- Start Execution Logic ---
 
 		// 5. Resolve Input from upstream node.
+		// Calls Out() on the upstream node, which now blocks until it's ready.
 		var resolvedInput In
-		resolvedInput, o.err = o.in.Out(nc)
+		// Use standard background context for potentially long-running upstream Out() call?
+		// Or rely on the overall workflow context `o.d.ctx.ctx`? Let's use the workflow context.
+		// resolvedInput, o.err = o.in.Out(o.d.ctx.ctx) // If Out needed context
+		resolvedInput, o.err = o.in.Out() // Updated Out() signature
 		if o.err != nil {
-			o.status = nodeStatusError // Mark as error before defer runs.
+			o.status = nodeStatusError // Mark as error before deferred completeNode runs.
 			// --- Use o.d.path ---
 			o.err = fmt.Errorf("failed to resolve input for node %s: %w", o.d.path, o.err)
 			return // completeNode (defer) will save this error state.
@@ -352,50 +391,35 @@ func (o *node[In, Out]) get(nc ResolverContext) {
 			o.d.ctx.ctx, o.d.ctx.uuid.String(), string(o.d.path), o.inOut.In, false,
 		)
 		if inputSaveErr != nil {
-			// Note: store.ErrMarshaling is checked inside SetNodeRequestContent based on StoreOptions
-			// The store method itself handles WarnAndSkip or WarnAndUsePlaceholder.
-			// If it returns an error here, it means StrictMarshaling was used OR
-			// a placeholder failed to marshal, OR it was a different store error.
-
-			// Record the persistence error regardless of the exact cause returned.
+			// Record the persistence error.
 			o.inputPersistenceErr = inputSaveErr.Error()
 
-			// Check if the error should halt execution (e.g., strict marshaling or other store failure).
-			// A specific check for ErrMarshaling might be needed if WarnAndSkip/WarnAndUsePlaceholder
-			// should *not* halt execution here. Let's assume any error returned here *is* fatal
-			// for now, unless the store is configured to handle it internally and return nil.
+			// Decide if this error is fatal based on store configuration (handled internally by SetNode...)
+			// For now, assume any error returned *is* fatal for execution progress.
 			// --- Use o.d.path ---
 			fmt.Printf("WARN/ERROR: Failed to persist input for node %s: %v. Execution halts.\n", o.d.path, inputSaveErr)
 			o.err = fmt.Errorf("failed to persist node input for %s: %w", o.d.path, inputSaveErr)
 			o.status = nodeStatusError
-			_ = o.updateStoreNode() // Update store to save inputPersistenceErr and error status
-			return                  // completeNode (defer) will save this error state.
-
-			/* // Alternative: Only halt on non-marshaling errors (if store handles marshaling internally)
-			   if !errors.Is(inputSaveErr, store.ErrMarshaling) { // Or based on store options if returned
-			       o.err = fmt.Errorf("failed to persist node input for %s: %w", o.d.path, inputSaveErr)
-			       o.status = nodeStatusError
-			       _ = o.updateStoreNode() // Update store to save inputPersistenceErr and error status
-			       return // completeNode (defer) will save this error state.
-			   } else {
-			        fmt.Printf("WARN: Failed to marshal/persist input for node %s (handled by store): %v. Execution continues.\n", o.d.path, inputSaveErr)
-			       _ = o.updateStoreNode() // Update store to save inputPersistenceErr
-			   }
-			*/
+			// Update store to save inputPersistenceErr and error status before completing.
+			// This update happens *before* the deferred completeNode.
+			_ = o.updateStoreNode()
+			return // completeNode (defer) will save this error state.
 		}
 
 		// 7. Execute the Node's Core Logic using the resolved input.
 		var executionOutput Out
+		// Use the standard context associated with the workflow for the execution.
+		stdCtx := o.d.ctx.ctx
 		// Check if the resolver implements the MiddlewareExecutor interface
 		if mwExecutor, ok := o.d.resolver.(MiddlewareExecutor[In, Out]); ok {
-			// It's middleware! Execute using the special method that takes ResolverContext.
-			executionOutput, o.err = mwExecutor.ExecuteMiddleware(o.d.ctx.ctx, nc, o.inOut.In) // Pass nc!
+			// It's middleware! Execute using the special method.
+			executionOutput, o.err = mwExecutor.ExecuteMiddleware(stdCtx, o.inOut.In)
 		} else {
-			// Standard node resolver, use the context from definition ctx (o.d.ctx.ctx) for Get
-			executionOutput, o.err = o.d.resolver.Get(o.d.ctx.ctx, o.inOut.In)
+			// Standard node resolver, use the standard context for Get.
+			executionOutput, o.err = o.d.resolver.Get(stdCtx, o.inOut.In)
 		}
 		if o.err != nil {
-			o.status = nodeStatusError // Mark as error before defer runs.
+			o.status = nodeStatusError // Mark as error before deferred completeNode runs.
 			// --- Use o.d.path ---
 			o.err = fmt.Errorf("node resolver failed for %s: %w", o.d.path, o.err)
 			return // completeNode (defer) will save this error state.
@@ -405,27 +429,37 @@ func (o *node[In, Out]) get(nc ResolverContext) {
 		o.inOut.Out = executionOutput
 		// The deferred completeNode will handle setting status to Complete and saving the output.
 
-	}) // End o.d.once.Do
+	}) // End o.execOnce.Do
 }
 
-// In returns the input value of the node. It triggers node execution if not already run/loaded.
-func (o *node[In, Out]) In(nc ResolverContext) (In, error) {
-	o.get(nc)
-	// Returns the input value and any execution error.
-	// Input might be zero value if loaded state had inputPersistenceErr.
-	return o.inOut.In, o.err
+// In blocks until the node's execution is complete and returns the input value
+// that was used for the execution, along with any execution error.
+// Note: The input might be the zero value if loading from a completed state
+// failed due to a previously recorded inputPersistenceErr.
+func (o *node[In, Out]) In() (In, error) {
+	<-o.doneCh // Wait for execution to finish
+	return o.inOut.In, o.resultErr
 }
 
-// Out returns the output value of the node. It triggers node execution if not already run/loaded.
-func (o *node[In, Out]) Out(nc ResolverContext) (Out, error) {
-	o.get(nc)
-	// Returns the output value and any execution error.
-	// Output might be zero value if loaded state had outputPersistenceErr or if execution failed.
-	return o.inOut.Out, o.err
+// Out blocks until the node's execution is complete and returns the output value
+// and any execution error.
+// Note: The output might be the zero value if execution failed, or if loading
+// from a completed state failed due to a previously recorded outputPersistenceErr.
+func (o *node[In, Out]) Out() (Out, error) {
+	<-o.doneCh // Wait for execution to finish
+	return o.resultOut, o.resultErr
 }
 
-// InOut returns both input and output values. Triggers execution if needed.
-func (o *node[In, Out]) InOut(nc ResolverContext) (InOut[In, Out], error) {
-	o.get(nc)
-	return o.inOut, o.err
+// InOut blocks until the node's execution is complete and returns both the
+// input and output values, along with any execution error.
+func (o *node[In, Out]) InOut() (InOut[In, Out], error) {
+	<-o.doneCh // Wait for execution to finish
+	return o.inOut, o.resultErr
+}
+
+// Done returns a channel that is closed when the node's execution finishes
+// (either successfully or with an error). This allows for non-blocking checks
+// or selection over multiple nodes.
+func (o *node[In, Out]) Done() <-chan struct{} {
+	return o.doneCh
 }

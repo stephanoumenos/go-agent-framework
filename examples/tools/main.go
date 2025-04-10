@@ -7,6 +7,7 @@ import (
 	"heart"
 	"heart/nodes/openai"
 	openaimiddleware "heart/nodes/openai/middleware" // Assuming middleware is in this path
+	"heart/store"
 	"os"
 	"strings"
 
@@ -26,7 +27,7 @@ type GetCurrentWeatherTool struct {
 	// No dependencies needed for this simple tool
 }
 
-// defineTool describes the tool for the OpenAI API.
+// DefineTool describes the tool for the OpenAI API.
 func (t *GetCurrentWeatherTool) DefineTool() openaimiddleware.ToolDefinition {
 	return openaimiddleware.ToolDefinition{
 		Name:        "get_current_weather",
@@ -44,7 +45,7 @@ func (t *GetCurrentWeatherTool) DefineTool() openaimiddleware.ToolDefinition {
 	}
 }
 
-// parseParams parses the arguments map into WeatherParams.
+// ParseParams parses the arguments map into WeatherParams.
 func (t *GetCurrentWeatherTool) ParseParams(arguments map[string]any) (any, error) {
 	var params WeatherParams
 	location, ok := arguments["location"].(string)
@@ -55,7 +56,7 @@ func (t *GetCurrentWeatherTool) ParseParams(arguments map[string]any) (any, erro
 	return params, nil
 }
 
-// call executes the tool's logic.
+// Call executes the tool's logic.
 func (t *GetCurrentWeatherTool) Call(ctx context.Context, params any) (string, error) {
 	weatherParams, ok := params.(WeatherParams)
 	if !ok {
@@ -63,7 +64,6 @@ func (t *GetCurrentWeatherTool) Call(ctx context.Context, params any) (string, e
 	}
 
 	// In a real tool, you'd call a weather API here.
-	// For the example, we'll return a hardcoded string.
 	location := weatherParams.Location
 	var weatherData string
 	if strings.Contains(strings.ToLower(location), "london") {
@@ -89,8 +89,7 @@ func toolWorkflowHandler(ctx heart.Context, in goopenai.ChatCompletionRequest) h
 	// 1. Instantiate the tool(s)
 	weatherTool := &GetCurrentWeatherTool{}
 
-	// 2. Define the underlying LLM node definition
-	// This definition might primarily provide default config now.
+	// 2. Define the underlying LLM node definition (primarily for config)
 	llmNodeDef := openai.CreateChatCompletion(ctx, "llm_call_config") // ID for the underlying node config
 
 	// 3. Define the Tool Middleware, wrapping the LLM config node
@@ -101,11 +100,11 @@ func toolWorkflowHandler(ctx heart.Context, in goopenai.ChatCompletionRequest) h
 		weatherTool,         // Pass the instantiated tool(s)
 	)
 
-	// 4. Bind the initial input request to the middleware node
-	finalOutput := toolsMiddlewareDef.Bind(heart.Into(in))
+	// 4. Bind the initial input request to the middleware node. Bind starts execution.
+	finalOutputNoder := toolsMiddlewareDef.Bind(heart.Into(in))
 
 	// 5. Return the outputer from the middleware node
-	return finalOutput
+	return finalOutputNoder
 }
 
 // --- Main Execution ---
@@ -128,22 +127,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Define Workflow
-	toolWorkflow := heart.DefineWorkflow(toolWorkflowHandler) // Using default memory store
-
-	// 3. Prepare Initial Request
-	// Use a model capable of tool calling (e.g., gpt-4o-mini, gpt-4-turbo)
-	initialRequest := goopenai.ChatCompletionRequest{
-		Model: goopenai.GPT4oMini,
-		Messages: []goopenai.ChatCompletionMessage{
-			{Role: goopenai.ChatMessageRoleUser, Content: "What's the weather like in London?"},
-		},
-		MaxTokens: 256, // Keep it reasonable for the example
+	fileStore, err := store.NewFileStore("workflows_tools") // Use separate dir
+	if err != nil {
+		fmt.Println("error creating file store: ", err)
+		return
 	}
 
-	// 4. Execute Workflow
+	// 2. Define Workflow
+	toolWorkflow := heart.DefineWorkflow(toolWorkflowHandler, heart.WithStore(fileStore))
+
+	// 3. Prepare Initial Request
+	initialRequest := goopenai.ChatCompletionRequest{
+		Model: goopenai.GPT4oMini, // Ensure model supports tool calling
+		Messages: []goopenai.ChatCompletionMessage{
+			{Role: goopenai.ChatMessageRoleUser, Content: "What's the weather like in London?"},
+			// {Role: goopenai.ChatMessageRoleUser, Content: "What's the weather like in Tokyo and London?"}, // Test multi-tool call
+		},
+		MaxTokens: 256,
+	}
+
+	// 4. Execute Workflow - New returns immediately
 	fmt.Println("Executing workflow...")
-	workflowCtx := context.Background() // Use a background context for this example
+	workflowCtx := context.Background()
 	resultHandle := toolWorkflow.New(workflowCtx, initialRequest)
 
 	// 5. Get Result (blocking)
@@ -159,14 +164,13 @@ func main() {
 		fmt.Println("\n--- Final Assistant Response ---")
 		fmt.Println(finalMessage.Content)
 		fmt.Println("------------------------------")
-		// You could also inspect finalResponse.Choices[0].FinishReason
-		// If it was 'tool_calls', something might have gone wrong in the final step.
 		fmt.Printf("Finish Reason: %s\n", finalResponse.Choices[0].FinishReason)
+		// Optional: Log tool calls if they exist in the final message (shouldn't usually happen if loop completed)
+		// if len(finalMessage.ToolCalls) > 0 {
+		//  fmt.Printf("DEBUG: Final message contained tool calls: %+v\n", finalMessage.ToolCalls)
+		// }
 	} else {
 		fmt.Println("Workflow completed, but no choices returned in the final response.")
-		// Optionally print the full response for debugging
-		// responseBytes, _ := json.MarshalIndent(finalResponse, "", "  ")
-		// fmt.Println(string(responseBytes))
 	}
 
 	fmt.Println("\nExample finished.")
