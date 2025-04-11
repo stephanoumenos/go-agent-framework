@@ -42,15 +42,24 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 	)
 	// Bind the initial input to the *middleware* definition.
 	// This returns the Node for the middleware step.
-	threeQuestionsNode := threeQuestionsMiddlewareDef.Bind(heart.Into(in)) // Node[Request, VeganQuestions]
+	threeQuestionsNode := threeQuestionsMiddlewareDef.Bind(heart.Into(in)) // Returns Node[Request, VeganQuestions]
 
+	// --- Replace Transform with NewNode ---
 	// Use the output handle (Output[VeganQuestions]) from the node
-	firstQuestionRequest := heart.Transform(
-		ctx,
-		"first-question-request",
-		threeQuestionsNode, // Pass the Node (which satisfies Output)
-		func(ctx context.Context, questions VeganQuestions) (goopenai.ChatCompletionRequest, error) {
-			return goopenai.ChatCompletionRequest{
+	firstQuestionRequestOutput := heart.NewNode( // Returns Output[goopenai.ChatCompletionRequest]
+		ctx,                      // Use the current heart context to define this node
+		"first-question-request", // Node ID for this transformation step
+		func(newNodeCtx heart.Context) heart.Output[goopenai.ChatCompletionRequest] { // Function takes heart.Context
+			// 1. Get the input value by blocking on the input Output handle (threeQuestionsNode)
+			questions, err := threeQuestionsNode.Out() // Call Out() on the Node handle
+			if err != nil {
+				// If getting the input failed, return an error Output
+				return heart.IntoError[goopenai.ChatCompletionRequest](fmt.Errorf("failed to get vegan questions: %w", err))
+			}
+
+			// 2. Perform the transformation logic (create the request)
+			// This specific logic doesn't need the context, but you could use newNodeCtx.ctx if needed
+			request := goopenai.ChatCompletionRequest{
 				Model:     goopenai.GPT4oMini,
 				MaxTokens: 2048,
 				Messages: []goopenai.ChatCompletionMessage{
@@ -59,12 +68,19 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 						Role:    goopenai.ChatMessageRoleSystem,
 					},
 					{
-						Content: questions.CarnistArgumentOne,
+						Content: questions.CarnistArgumentOne, // Use the fetched questions
 						Role:    goopenai.ChatMessageRoleUser,
 					},
 				},
-			}, nil
-		}) // Returns Node[VeganQuestions, Request]
+			}
+			// This simple transform doesn't produce an error itself, but if it did,
+			// you would return heart.IntoError here.
+
+			// 3. Wrap the successful result in an Output
+			return heart.Into(request)
+		},
+	)
+	// --- End Replace Transform ---
 
 	firstQuestionAnswerLLMNode := openai.CreateChatCompletion(ctx, "first-question-answer-llm") // Node for the actual LLM call
 	answerToFirstQuestionMiddlewareDef := openaimiddleware.WithStructuredOutput[QuestionAnswer](
@@ -72,8 +88,8 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 		"parse-first-answer",       // Give the middleware step a unique ID
 		firstQuestionAnswerLLMNode, // Tell the middleware to wrap the second LLM call
 	)
-	// Bind the request (output of the transform) to the *second middleware* definition.
-	answerToFirstQuestionNode := answerToFirstQuestionMiddlewareDef.Bind(firstQuestionRequest) // Node[Request, QuestionAnswer]
+	// Bind the request (output of the NewNode) to the *second middleware* definition.
+	answerToFirstQuestionNode := answerToFirstQuestionMiddlewareDef.Bind(firstQuestionRequestOutput) // Returns Node[Request, QuestionAnswer]
 
 	// Return the final output handle (Node satisfies Output)
 	return answerToFirstQuestionNode
@@ -82,6 +98,10 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 func main() {
 	// Idea: add WithConnector to get individual nodes.
 	authToken := os.Getenv("OPENAI_API_KEY")
+	if authToken == "" {
+		fmt.Fprintln(os.Stderr, "Error: OPENAI_API_KEY environment variable not set.")
+		os.Exit(1) // Exit if key is missing
+	}
 	client := goopenai.NewClient(authToken)
 
 	ctx := context.Background()
@@ -100,7 +120,7 @@ func main() {
 
 	carnistDebunkerWorkflow := heart.DefineWorkflow(handleCarnism, heart.WithStore(fileStore))
 
-	// New is now non-blocking and returns a result handle (WorkflowOutput)
+	// New is now non-blocking and returns a result handle (WorkflowOutput which implements Output)
 	resultHandle := carnistDebunkerWorkflow.New(ctx, goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{
 			{Content: systemMsg, Role: goopenai.ChatMessageRoleSystem},
@@ -108,12 +128,13 @@ func main() {
 		},
 		Model:     goopenai.GPT4oMini,
 		MaxTokens: 2048,
+		// Temperature: 1.0, // Using default temperature
 	})
 
 	fmt.Println("Workflow started...")
 
-	// Block and wait for the result using Out() on the WorkflowOutput
-	answer, err := resultHandle.Out()
+	// Block and wait for the result using Out() on the WorkflowOutput/Output handle
+	answer, err := resultHandle.Out() // Use Out() instead of Get()
 	if err != nil {
 		fmt.Println("error running workflow: ", err)
 		return

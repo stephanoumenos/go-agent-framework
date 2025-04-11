@@ -129,7 +129,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fileStore, err := store.NewFileStore("workflows_tools") // Use separate dir
+	fileStore, err := store.NewFileStore("workflows")
 	if err != nil {
 		fmt.Println("error creating file store: ", err)
 		return

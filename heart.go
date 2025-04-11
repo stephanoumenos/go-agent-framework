@@ -277,43 +277,6 @@ func NewNode[Out any](
 	return noder
 }
 
-// --- Transform Implementation ---
-
-// transformResolver implements the NodeResolver for Transform nodes.
-type transformResolver[In, Out any] struct {
-	fun func(ctx context.Context, in In) (Out, error) // Standard context is ok if no sub-nodes defined
-}
-
-func (tr *transformResolver[In, Out]) Init() NodeInitializer {
-	return genericNodeInitializer{id: "system:transform"} // Type ID
-}
-
-func (tr *transformResolver[In, Out]) Get(ctx context.Context, in In) (Out, error) {
-	// Simple transformation just calls the user function.
-	return tr.fun(ctx, in)
-}
-
-// Ensure transformResolver implements NodeResolver
-var _ NodeResolver[any, any] = (*transformResolver[any, any])(nil)
-
-// Transform creates a node that applies a simple function to an input Output.
-// The function receives standard context.Context. If the transformation needs to
-// define sub-nodes within the heart graph or return a node, use NewNode instead.
-func Transform[In, Out any](
-	ctx Context, // Heart context for defining the Transform node
-	nodeID NodeID, // ID for this transform node
-	in Output[In], // The input Output handle
-	fun func(ctx context.Context, in In) (Out, error), // The transformation function returning value/error
-) Node[In, Out] { // Returns the full Node handle
-	resolver := &transformResolver[In, Out]{
-		fun: fun,
-	}
-	// DefineNode generates correct path for the transform node itself.
-	nodeDefinition := DefineNode(ctx, nodeID, resolver)
-	// Bind triggers eager execution, passing the input Output 'in'.
-	return nodeDefinition.Bind(in)
-}
-
 // --- If Implementation ---
 // NOTE: Needs significant update later for path and context handling within branches.
 // This implementation is broken. Use NewNode with standard Go if/else logic instead.
