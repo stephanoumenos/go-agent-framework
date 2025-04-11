@@ -25,7 +25,7 @@ type node[In, Out any] struct {
 	startedAt            time.Time
 	runAt                time.Time
 	completedAt          time.Time
-	isTerminal           bool
+	isTerminal           bool // TODO: Fix this (not being passed)
 	childrenMtx          sync.Mutex
 
 	// --- Fields for eager execution ---

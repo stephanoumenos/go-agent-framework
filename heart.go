@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"path"
+	// Make sure store is imported if needed for enhancements later
+	// Make sure uuid is imported
 )
 
 // NodeID represents a segment name within a NodePath. It's the local identifier
@@ -129,6 +131,8 @@ func (d *definition[In, Out]) init() error {
 		return fmt.Errorf("NodeInitializer.ID() returned empty NodeTypeID for node path %s", d.path)
 	}
 
+	// Pass the *initializer* (which might be the resolver itself or a dedicated struct)
+	// to dependencyInject, along with its NodeTypeID.
 	return dependencyInject(d.initializer, d.nodeTypeID) // Inject based on TYPE id
 }
 
@@ -278,113 +282,112 @@ func NewNode[Out any](
 }
 
 // --- If Implementation ---
-// NOTE: Needs significant update later for path and context handling within branches.
-// This implementation is broken. Use NewNode with standard Go if/else logic instead.
 
-type _if[Out any] struct {
-	ctx        Context // The context used to *define* the If node
-	_condition Output[bool]
-	ifTrue     func(Context) Output[Out] // Function expects a derived context, returns Output
-	_else      func(Context) Output[Out] // Function expects a derived context, returns Output
-	defPath    NodePath                  // Store the definition path to derive branch paths
-}
-
-func (i *_if[Out]) Init() NodeInitializer {
-	return genericNodeInitializer{id: "system:if"} // Type ID
-}
-
-// Get for _if is complex because it needs to dynamically execute one branch
-// and ensure nodes within that branch get the correct context/path.
-// The current eager model makes this tricky to implement correctly within Get.
-// This needs a redesign for the eager model.
-func (i *_if[Out]) Get(stdCtx context.Context, condition bool) (Out, error) {
-	// PROBLEM: This Get logic runs *after* Bind has already returned.
-	// We need to evaluate the condition and then *dynamically define and bind*
-	// the nodes within the chosen branch *using the correct context*.
-	// This requires a different approach than simply calling ifTrue/else here.
-	// This implementation is fundamentally incompatible with the eager model without redesign.
-
-	fmt.Printf("WARNING: heart.If is currently broken in the eager execution model and needs redesign. Use heart.NewNode with Go's if/else instead.\n")
-
-	var result Output[Out]
-	var branchCtx Context
-
-	// --- Incorrect Path Derivation Logic (Illustrative of the need) ---
-	// This logic needs to happen dynamically or be structured differently.
-	trueCtx := i.ctx
-	trueCtx.BasePath = JoinPath(i.defPath, "ifTrue") // Derive path for true branch
-	trueCtx.ctx = stdCtx                             // Update standard context
-
-	falseCtx := i.ctx
-	falseCtx.BasePath = JoinPath(i.defPath, "ifFalse") // Derive path for false branch
-	falseCtx.ctx = stdCtx                              // Update standard context
-	// --- End Incorrect Logic ---
-
-	if condition {
-		branchCtx = trueCtx // Use derived context (which is incorrectly derived here)
-		if i.ifTrue == nil {
-			return *new(Out), fmt.Errorf("internal execution error: If node (true branch) has nil function")
-		}
-		result = i.ifTrue(branchCtx)
-	} else {
-		branchCtx = falseCtx // Use derived context (incorrectly derived)
-		if i._else == nil {
-			var zero Out
-			// Represent the "no-op" else branch as an immediately resolved Output
-			result = Into(zero)
-		} else {
-			result = i._else(branchCtx)
-		}
-	}
-
-	// Ensure the chosen branch function actually returned an Output
-	if result == nil {
-		branch := "false"
-		if condition {
-			branch = "true"
-		}
-		return *new(Out), fmt.Errorf("internal execution error: If node (%s branch) function returned a nil Output", branch)
-	}
-
-	// Calling Out() here will trigger the execution of the selected branch's Output
-	// This part is conceptually okay, but getting the correct `result` Output
-	// with proper path context requires the redesign mentioned above.
-	return result.Out()
-}
-
-// Ensure _if implements NodeResolver
-var _ NodeResolver[bool, any] = (*_if[any])(nil)
-
-// If - Needs update later for path and context handling within branches. BROKEN.
-// Use heart.NewNode with Go's native if/else constructs for conditional logic.
+// If creates a conditional execution branch based on an Output[bool].
+// It defines a wrapper node using NewNode. The function within NewNode waits
+// for the 'condition' to resolve, then executes either the 'ifTrue' or '_else'
+// function, passing a derived context with an appropriate BasePath
+// (e.g., ".../nodeID/ifTrue" or ".../nodeID/ifFalse").
+//
+// The Output returned by the chosen branch function becomes the final Output of If.
+// Nodes defined within the executed branch will be persisted under the derived path.
+//
+// Args:
+//
+//	ctx: The context used to define the If wrapper node. Its BasePath determines the parent path.
+//	nodeID: The local ID for this If construct, relative to ctx.BasePath. The wrapper node path will be JoinPath(ctx.BasePath, nodeID).
+//	condition: An Output[bool] whose result determines which branch executes.
+//	ifTrue: A function executed if the condition is true. Receives a derived Context for the true branch. Must not be nil.
+//	_else: A function executed if the condition is false. Receives a derived Context for the false branch. Can be nil (results in an Output resolving to the zero value of Out).
+//
+// Returns:
+//
+//	An Output[Out] representing the result of the executed branch.
 func If[Out any](
 	ctx Context,
 	nodeID NodeID,
 	condition Output[bool],
-	ifTrue func(Context) Output[Out], // Must not be nil
-	_else func(Context) Output[Out], // Can be nil (results in zero value for Out)
-) Output[Out] { // Returns the Output handle
-	// Define the If node itself.
-	ifPath := JoinPath(ctx.BasePath, nodeID)
-	fmt.Printf("WARNING: Defining heart.If node '%s'. This construct is currently broken; use heart.NewNode with Go's if/else instead.\n", nodeID)
-
+	ifTrue func(ctx Context) Output[Out],
+	_else func(ctx Context) Output[Out],
+) Output[Out] {
+	// --- Pre-checks ---
 	if ifTrue == nil {
-		err := fmt.Errorf("programming error: heart.If called with nil ifTrue function for node '%s'", nodeID)
+		err := fmt.Errorf("programming error: heart.If node '%s' at path '%s' called with a nil 'ifTrue' function", nodeID, ctx.BasePath)
+		// Return an immediately failing Output
 		return IntoError[Out](err)
 	}
-
-	ifResolver := &_if[Out]{
-		ctx:        ctx, // Store definition context
-		_condition: condition,
-		ifTrue:     ifTrue,
-		_else:      _else,
-		defPath:    ifPath, // Store the calculated path
+	if condition == nil {
+		err := fmt.Errorf("programming error: heart.If node '%s' at path '%s' called with a nil 'condition' Output", nodeID, ctx.BasePath)
+		return IntoError[Out](err)
 	}
+	// TODO: Add validation for nodeID if needed (e.g., non-empty, valid characters)
 
-	// DefineNode generates correct path for the If node itself.
-	nodeDefinition := DefineNode(ctx, nodeID, ifResolver)
+	// Use NewNode to wrap the conditional logic.
+	// The wrapper node itself doesn't take direct input via Bind (hence struct{}),
+	// its logic depends on resolving the 'condition' Output internally.
+	return NewNode[Out](
+		ctx, // Use the original context provided to If to define the wrapper node.
+		// This sets the parent path correctly.
+		nodeID, // Use the user-provided ID for the wrapper node itself.
+		// --- This inner function contains the core conditional logic ---
+		func(wrapperCtx Context) Output[Out] {
+			// wrapperCtx is the context for the *execution* of the wrapper node.
+			// Its BasePath is correctly set to the full path of the If wrapper
+			// (e.g., /parent/path/nodeID).
 
-	// Bind triggers eager execution of the _if resolver's Get method.
-	// The Get method currently doesn't handle branches correctly in the eager model.
-	return nodeDefinition.Bind(condition)
+			// 1. Block and wait for the condition to resolve.
+			condValue, err := condition.Out() // This blocks until the condition node completes
+			if err != nil {
+				// If condition evaluation itself failed, the If construct fails.
+				// Wrap the error for clarity.
+				return IntoError[Out](fmt.Errorf("failed to evaluate condition for If node '%s' at path '%s': %w", nodeID, wrapperCtx.BasePath, err))
+			}
+
+			// TODO (Optional Enhancement): Persist the condition result (condValue)
+			// to the wrapper node's state in the store for better traceability.
+			// This might involve adding fields to `nodeState` or a specific store method.
+			// For now, we just use the value in memory.
+
+			var chosenBranchOutput Output[Out]
+
+			if condValue {
+				// --- True Branch ---
+				// Derive context specifically for the true branch.
+				trueBranchCtx := wrapperCtx                                      // Create a copy to modify BasePath
+				trueBranchCtx.BasePath = JoinPath(wrapperCtx.BasePath, "ifTrue") // e.g., /parent/path/nodeID/ifTrue
+
+				// Execute the user's true branch function, passing the derived context.
+				chosenBranchOutput = ifTrue(trueBranchCtx)
+
+			} else {
+				// --- False Branch ---
+				// Derive context specifically for the false branch.
+				falseBranchCtx := wrapperCtx                                       // Create a copy to modify BasePath
+				falseBranchCtx.BasePath = JoinPath(wrapperCtx.BasePath, "ifFalse") // e.g., /parent/path/nodeID/ifFalse
+
+				if _else == nil {
+					// No else function provided. Resolve immediately with the zero value for Out.
+					var zero Out
+					chosenBranchOutput = Into(zero) // Use heart.Into for immediate resolution
+				} else {
+					// Execute the user's else branch function, passing the derived context.
+					chosenBranchOutput = _else(falseBranchCtx)
+				}
+			}
+
+			// Validate that the chosen branch function returned a non-nil Output.
+			if chosenBranchOutput == nil {
+				branchName := "ifFalse"
+				if condValue {
+					branchName = "ifTrue"
+				}
+				// This indicates a programming error in the user's branch function.
+				return IntoError[Out](fmt.Errorf("If node '%s' at path '%s': '%s' branch function returned a nil Output", nodeID, wrapperCtx.BasePath, branchName))
+			}
+
+			// Return the Output handle obtained from the executed branch.
+			// The result of the If construct will be the result of this chosen Output.
+			return chosenBranchOutput
+		}, // --- End of NewNode inner function ---
+	)
 }
