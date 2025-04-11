@@ -5,11 +5,6 @@ import (
 	"context"
 	"fmt"
 	"path"
-	// Keep sync for node's execOnce
-	// Keep time for node state
-	// io needed for WorkflowInput type alias, keep it
-	// "github.com/google/uuid" needed for WorkflowUUID, keep it
-	// "heart/store" needed for node persistence, keep it
 )
 
 // NodeID represents a segment name within a NodePath. It's the local identifier
@@ -29,13 +24,40 @@ func JoinPath(base NodePath, id NodeID) NodePath {
 	return NodePath(path.Join(string(base), string(id)))
 }
 
-type NodeDefinition[In, Out any] interface {
-	heart()
-	Bind(Outputer[In]) NodeResult[In, Out]
-	// TODO: Add a method to get the NodePath? (Maybe later)
-	// Path() NodePath
+// Inputer defines the interface for retrieving the input of a node.
+type Inputer[In any] interface {
+	// In returns the resolved input of the node, blocking if necessary.
+	In() (In, error)
 }
 
+// Output defines the interface for retrieving the output of a node or operation.
+// It focuses on accessing the final value and checking for completion.
+type Output[Out any] interface {
+	// Out returns the output of the node, blocking if necessary.
+	Out() (Out, error)
+	// Done returns a channel that is closed when the node's execution is complete (successfully or with an error).
+	Done() <-chan struct{}
+}
+
+// Node defines the interface for a complete processing node instance within the graph.
+// It allows inspection of both input and output.
+type Node[In, Out any] interface {
+	Inputer[In] // Embeds In()
+	Output[Out] // Embeds Out() and Done()
+	// InOut returns both input and output, blocking if necessary.
+	InOut() (InOut[In, Out], error)
+}
+
+// NodeDefinition represents the static definition of a node's structure and behavior.
+// It's used to create runtime node instances via Bind.
+type NodeDefinition[In, Out any] interface {
+	heart() // Internal marker method
+	// Bind creates a runtime node instance (Node) by connecting it to an input source (Output).
+	// Binding triggers the eager execution of the node.
+	Bind(Output[In]) Node[In, Out]
+}
+
+// into represents an immediately resolved value or error, acting as an Output source.
 type into[Out any] struct {
 	out Out
 	err error
@@ -65,87 +87,77 @@ func (i *into[Out]) InOut() (InOut[struct{}, Out], error) { // Input type is irr
 	return InOut[struct{}, Out]{In: zero, Out: i.out}, i.err
 }
 
-// Into wraps a concrete value, making it an immediately resolved Outputer.
-func Into[Out any](out Out) Outputer[Out] {
+// Into wraps a concrete value, making it an immediately resolved Output.
+func Into[Out any](out Out) Output[Out] {
 	return &into[Out]{out: out}
 }
 
-// IntoError wraps an error, making it an immediately resolved Outputer that returns the error.
-func IntoError[Out any](err error) Outputer[Out] {
+// IntoError wraps an error, making it an immediately resolved Output that returns the error.
+func IntoError[Out any](err error) Output[Out] {
 	return &into[Out]{err: err}
 }
 
-// Ensure into implements Noder (specifically Outputer part is most relevant)
-var _ NodeResult[struct{}, any] = (*into[any])(nil)
+// Ensure into implements Node (specifically Output part is most relevant for source nodes)
+var _ Node[struct{}, any] = (*into[any])(nil)
 
+// NodeInitializer provides identification for a node type, primarily for dependency injection.
 type NodeInitializer interface {
-	ID() NodeTypeID // Keep this as NodeTypeID (type of node), not instance ID
+	ID() NodeTypeID // Returns the type identifier (e.g., "openai:chat")
 }
 
+// definition holds the static configuration of a node definition.
 type definition[In, Out any] struct {
-	// id NodeID // Replaced by path
 	path        NodePath   // Unique hierarchical path for this node instance
-	nodeTypeID  NodeTypeID // Added: Store the node type ID separately
+	nodeTypeID  NodeTypeID // Store the node type ID separately
 	initializer NodeInitializer
 	resolver    NodeResolver[In, Out]
-	// once *sync.Once // Removed: Execution is per-instance now
-	ctx Context // The context used to define this node
-	// TODO: Store NodeOptions here later
+	ctx         Context // The context used to define this node
 }
 
+// init initializes the resolver and performs dependency injection.
 func (d *definition[In, Out]) init() error {
-	// Initialize resolver and get the initializer instance
 	if d.resolver == nil {
-		// This can happen if the definition was manually constructed incorrectly
 		return fmt.Errorf("internal error: node resolver is nil for node path %s", d.path)
 	}
 	d.initializer = d.resolver.Init()
 	if d.initializer == nil {
-		// Attempt to derive NodeTypeId from the resolver itself if Init returns nil
-		// This might be fragile, consider requiring Init() to always return non-nil
-		// or find another way to get NodeTypeID reliably.
-		// For now, let's assume Init always works or add better error handling.
-		// panic(fmt.Sprintf("NodeResolver.Init() returned nil for node path %s", d.path)) // Option: Panic
-		return fmt.Errorf("NodeResolver.Init() returned nil for node path %s", d.path) // Option: Error
+		return fmt.Errorf("NodeResolver.Init() returned nil for node path %s", d.path)
 	}
 
-	// Store the NodeTypeID from the initializer
 	d.nodeTypeID = d.initializer.ID()
 	if d.nodeTypeID == "" {
 		return fmt.Errorf("NodeInitializer.ID() returned empty NodeTypeID for node path %s", d.path)
 	}
 
-	// Perform dependency injection using the NodeTypeID
-	// DependencyInject might modify the d.initializer instance.
 	return dependencyInject(d.initializer, d.nodeTypeID) // Inject based on TYPE id
 }
 
-// Bind creates a runtime node instance (Noder) and immediately starts its execution in a goroutine.
-func (d *definition[In, Out]) Bind(in Outputer[In]) NodeResult[In, Out] {
+// Bind creates a runtime node instance (Node) and immediately starts its execution in a goroutine.
+func (d *definition[In, Out]) Bind(in Output[In]) Node[In, Out] {
 	n := &node[In, Out]{
 		d:      d,
 		in:     in,
 		inOut:  InOut[In, Out]{},
 		doneCh: make(chan struct{}), // Initialize the done channel
-		// execOnce is zero-value initialized
 	}
 
 	// Eager execution: Start the node's get() method in a goroutine.
 	go n.get()
 
-	return n // Return the Noder instance immediately.
+	return n // Return the Node instance immediately.
 }
+
+// Internal marker method for NodeDefinition interface satisfaction.
+func (d *definition[In, Out]) heart() {}
 
 var _ NodeDefinition[any, any] = (*definition[any, any])(nil)
 
-func (d *definition[In, Out]) heart() {}
-
-// NodeTypeID represents the *type* of a node (e.g., "openai:chat", "transform").
+// NodeTypeID represents the *type* of a node (e.g., "openai:createChatCompletion", "system:transform").
 // Used for dependency injection and potentially metrics/logging.
 type NodeTypeID string
 
 // DefineNode creates a node definition.
-// It now calculates the unique NodePath based on the context's BasePath and the user-provided nodeID.
+// It calculates the unique NodePath based on the context's BasePath and the user-provided nodeID.
 func DefineNode[In, Out any](
 	ctx Context, // Context now contains BasePath
 	nodeID NodeID, // User-provided local ID for this node segment
@@ -160,51 +172,34 @@ func DefineNode[In, Out any](
 		path:     fullPath, // Store the full path
 		resolver: resolver,
 		ctx:      ctx, // Store context used for definition (contains base path etc.)
-		// once: &sync.Once{}, // Removed
 		// nodeTypeID and initializer are set during d.init()
 	}
 }
 
+// NodeResolver defines the interface for the core logic of a node.
 type NodeResolver[In, Out any] interface {
-	Init() NodeInitializer // Must return the initializer which provides the NodeTypeID
+	// Init provides the NodeInitializer, typically for dependency injection setup.
+	Init() NodeInitializer
+	// Get contains the primary execution logic, transforming input to output.
 	Get(context.Context, In) (Out, error)
 }
 
+// InOut holds both the input and output values of a node.
 type InOut[In, Out any] struct {
 	In  In
 	Out Out
 }
 
-type Inputer[In any] interface {
-	// In returns the resolved input of the node, blocking if necessary.
-	In() (In, error)
-}
-
-type Outputer[Out any] interface {
-	// Out returns the output of the node, blocking if necessary.
-	Out() (Out, error)
-}
-
-type NodeResult[In, Out any] interface {
-	Inputer[In]
-	Outputer[Out]
-	// InOut returns both input and output, blocking if necessary.
-	InOut() (InOut[In, Out], error)
-	// Done returns a channel that is closed when the node's execution is complete (successfully or with an error).
-	Done() <-chan struct{}
-}
-
 // --- NewNode Implementation ---
 
 // newNodeResolver is a resolver for nodes created using NewNode.
-// It wraps a user function that returns an Outputer, allowing dynamic sub-graph construction.
+// It wraps a user function that returns an Output, allowing dynamic sub-graph construction.
 type newNodeResolver[Out any] struct {
-	fun    func(ctx Context) Outputer[Out] // Takes heart Context, returns Outputer
-	defCtx Context                         // The context captured when NewNode was defined
+	fun    func(ctx Context) Output[Out] // Takes heart Context, returns Output
+	defCtx Context                       // The context captured when NewNode was defined
 }
 
 // genericNodeInitializer - Reusable initializer providing a NodeTypeID
-// Moved definition here as it's used by multiple resolvers.
 type genericNodeInitializer struct {
 	id NodeTypeID
 }
@@ -218,7 +213,7 @@ func (r *newNodeResolver[Out]) Init() NodeInitializer {
 	return genericNodeInitializer{id: "system:newNode"}
 }
 
-// Get executes the wrapped function `fun` to get an Outputer, then calls Out() on it.
+// Get executes the wrapped function `fun` to get an Output, then calls Out() on it.
 // The input `_ struct{}` is ignored.
 func (r *newNodeResolver[Out]) Get(stdCtx context.Context, _ struct{}) (Out, error) {
 	// Create the derived heart.Context for the function call.
@@ -228,20 +223,17 @@ func (r *newNodeResolver[Out]) Get(stdCtx context.Context, _ struct{}) (Out, err
 	// Update the standard context within the heart.Context to the one provided at runtime.
 	nodeCtx.ctx = stdCtx
 
-	// Call the user's function to get the Outputer for the actual result.
+	// Call the user's function to get the Output for the actual result.
 	// This function might define and bind a sub-graph using nodeCtx.
-	subOutputer := r.fun(nodeCtx) // Now returns Outputer[Out]
+	subOutputer := r.fun(nodeCtx) // Now returns Output[Out]
 
-	// Check if the user function returned a nil Outputer, which is invalid.
+	// Check if the user function returned a nil Output, which is invalid.
 	if subOutputer == nil {
 		var zero Out
-		// This indicates a programming error by the user of NewNode.
-		// We cannot easily get the NodePath here, so use a generic error.
-		// TODO: Consider logging this more visibly.
-		return zero, fmt.Errorf("internal execution error: NewNode function returned a nil Outputer")
+		return zero, fmt.Errorf("internal execution error: NewNode function returned a nil Output")
 	}
 
-	// Block and wait for the result from the Outputer returned by the user function.
+	// Block and wait for the result from the Output returned by the user function.
 	// This retrieves the actual value (or error) from the sub-graph/computation defined within 'fun'.
 	return subOutputer.Out()
 }
@@ -249,9 +241,9 @@ func (r *newNodeResolver[Out]) Get(stdCtx context.Context, _ struct{}) (Out, err
 // Ensure newNodeResolver implements NodeResolver
 var _ NodeResolver[struct{}, any] = (*newNodeResolver[any])(nil)
 
-// NewNode creates a NodeResult that wraps an arbitrary Go function (`fun`).
+// NewNode creates an Output that wraps an arbitrary Go function (`fun`).
 // The function `fun` is responsible for defining the logic (potentially a sub-graph)
-// and returning an Outputer representing the final result of that logic.
+// and returning an Output representing the final result of that logic.
 // Execution is eager: `NewNode` defines and binds the wrapper node immediately.
 // The provided `ctx` is used to define the wrapper node itself (determining its path).
 // The `fun` receives a derived `Context` with the correct `BasePath`, allowing it to
@@ -259,8 +251,8 @@ var _ NodeResolver[struct{}, any] = (*newNodeResolver[any])(nil)
 func NewNode[Out any](
 	ctx Context, // Context for defining this NewNode wrapper
 	nodeID NodeID, // ID for this NewNode wrapper relative to ctx.BasePath
-	fun func(ctx Context) Outputer[Out], // The function that returns the final Outputer
-) NodeResult[struct{}, Out] { // Returns a Noder representing the execution of the wrapper
+	fun func(ctx Context) Output[Out], // The function that returns the final Output
+) Output[Out] { // Returns an Output representing the execution of the wrapper
 
 	// Create the resolver, capturing the user function and the definition context.
 	// The definition context (ctx) provides the BasePath for the context passed to 'fun'.
@@ -277,20 +269,17 @@ func NewNode[Out any](
 	// Bind the wrapper node with a dummy input (Into(struct{}{})).
 	// This triggers the eager execution of the wrapper node's get() method in a goroutine.
 	// The get() method will call the newNodeResolver's Get(), which calls the user's function 'fun',
-	// gets the returned Outputer, and calls .Out() on it to get the final result.
+	// gets the returned Output, and calls .Out() on it to get the final result.
 	noder := nodeDefinition.Bind(Into(struct{}{}))
 
-	// Return the Noder representing the wrapper node immediately.
-	// Calling .Out() on this noder will block until the Outputer returned by 'fun' resolves.
+	// Return the Output representing the wrapper node immediately.
+	// Calling .Out() on this Output will block until the Output returned by 'fun' resolves.
 	return noder
 }
 
-// --- FanIn Removed ---
-// Use NewNode with manual synchronization (calling .Out() on dependencies) instead.
-// See examples/fanin/main.go
-
 // --- Transform Implementation ---
 
+// transformResolver implements the NodeResolver for Transform nodes.
 type transformResolver[In, Out any] struct {
 	fun func(ctx context.Context, in In) (Out, error) // Standard context is ok if no sub-nodes defined
 }
@@ -307,31 +296,23 @@ func (tr *transformResolver[In, Out]) Get(ctx context.Context, in In) (Out, erro
 // Ensure transformResolver implements NodeResolver
 var _ NodeResolver[any, any] = (*transformResolver[any, any])(nil)
 
-// Transform creates a node that applies a simple function to an input.
+// Transform creates a node that applies a simple function to an input Output.
 // The function receives standard context.Context. If the transformation needs to
 // define sub-nodes within the heart graph or return a node, use NewNode instead.
 func Transform[In, Out any](
 	ctx Context, // Heart context for defining the Transform node
 	nodeID NodeID, // ID for this transform node
-	in Outputer[In], // The input noder
+	in Output[In], // The input Output handle
 	fun func(ctx context.Context, in In) (Out, error), // The transformation function returning value/error
-) Outputer[Out] { // Returns the output noder
+) Node[In, Out] { // Returns the full Node handle
 	resolver := &transformResolver[In, Out]{
 		fun: fun,
 	}
 	// DefineNode generates correct path for the transform node itself.
 	nodeDefinition := DefineNode(ctx, nodeID, resolver)
-	// Bind triggers eager execution, passing the input noder 'in'.
+	// Bind triggers eager execution, passing the input Output 'in'.
 	return nodeDefinition.Bind(in)
 }
-
-// --- Connector (Placeholder) ---
-
-type connector[Out any] struct{}
-
-func (c *connector[Out]) Connect(Outputer[Out]) {}
-
-func UseConnector[Out any]() *connector[Out] { return nil } // Placeholder
 
 // --- If Implementation ---
 // NOTE: Needs significant update later for path and context handling within branches.
@@ -339,10 +320,10 @@ func UseConnector[Out any]() *connector[Out] { return nil } // Placeholder
 
 type _if[Out any] struct {
 	ctx        Context // The context used to *define* the If node
-	_condition Outputer[bool]
-	ifTrue     func(Context) Outputer[Out] // Function expects a derived context, returns Outputer
-	_else      func(Context) Outputer[Out] // Function expects a derived context, returns Outputer
-	defPath    NodePath                    // Store the definition path to derive branch paths
+	_condition Output[bool]
+	ifTrue     func(Context) Output[Out] // Function expects a derived context, returns Output
+	_else      func(Context) Output[Out] // Function expects a derived context, returns Output
+	defPath    NodePath                  // Store the definition path to derive branch paths
 }
 
 func (i *_if[Out]) Init() NodeInitializer {
@@ -362,7 +343,7 @@ func (i *_if[Out]) Get(stdCtx context.Context, condition bool) (Out, error) {
 
 	fmt.Printf("WARNING: heart.If is currently broken in the eager execution model and needs redesign. Use heart.NewNode with Go's if/else instead.\n")
 
-	var result Outputer[Out]
+	var result Output[Out]
 	var branchCtx Context
 
 	// --- Incorrect Path Derivation Logic (Illustrative of the need) ---
@@ -378,7 +359,6 @@ func (i *_if[Out]) Get(stdCtx context.Context, condition bool) (Out, error) {
 
 	if condition {
 		branchCtx = trueCtx // Use derived context (which is incorrectly derived here)
-		// Check if function is nil before calling
 		if i.ifTrue == nil {
 			return *new(Out), fmt.Errorf("internal execution error: If node (true branch) has nil function")
 		}
@@ -387,24 +367,24 @@ func (i *_if[Out]) Get(stdCtx context.Context, condition bool) (Out, error) {
 		branchCtx = falseCtx // Use derived context (incorrectly derived)
 		if i._else == nil {
 			var zero Out
-			// Represent the "no-op" else branch as an immediately resolved Outputer
+			// Represent the "no-op" else branch as an immediately resolved Output
 			result = Into(zero)
 		} else {
 			result = i._else(branchCtx)
 		}
 	}
 
-	// Ensure the chosen branch function actually returned an Outputer
+	// Ensure the chosen branch function actually returned an Output
 	if result == nil {
 		branch := "false"
 		if condition {
 			branch = "true"
 		}
-		return *new(Out), fmt.Errorf("internal execution error: If node (%s branch) function returned a nil Outputer", branch)
+		return *new(Out), fmt.Errorf("internal execution error: If node (%s branch) function returned a nil Output", branch)
 	}
 
-	// Calling Out() here will trigger the execution of the selected branch's Outputer
-	// This part is conceptually okay, but getting the correct `result` Outputer
+	// Calling Out() here will trigger the execution of the selected branch's Output
+	// This part is conceptually okay, but getting the correct `result` Output
 	// with proper path context requires the redesign mentioned above.
 	return result.Out()
 }
@@ -417,18 +397,15 @@ var _ NodeResolver[bool, any] = (*_if[any])(nil)
 func If[Out any](
 	ctx Context,
 	nodeID NodeID,
-	condition Outputer[bool],
-	ifTrue func(Context) Outputer[Out], // Must not be nil
-	_else func(Context) Outputer[Out], // Can be nil (results in zero value for Out)
-) Outputer[Out] {
+	condition Output[bool],
+	ifTrue func(Context) Output[Out], // Must not be nil
+	_else func(Context) Output[Out], // Can be nil (results in zero value for Out)
+) Output[Out] { // Returns the Output handle
 	// Define the If node itself.
 	ifPath := JoinPath(ctx.BasePath, nodeID)
 	fmt.Printf("WARNING: Defining heart.If node '%s'. This construct is currently broken; use heart.NewNode with Go's if/else instead.\n", nodeID)
 
 	if ifTrue == nil {
-		// It doesn't make sense to have an If node without a true branch.
-		// We could panic or return an error node immediately.
-		// Returning an error node is safer.
 		err := fmt.Errorf("programming error: heart.If called with nil ifTrue function for node '%s'", nodeID)
 		return IntoError[Out](err)
 	}
@@ -448,19 +425,3 @@ func If[Out any](
 	// The Get method currently doesn't handle branches correctly in the eager model.
 	return nodeDefinition.Bind(condition)
 }
-
-/* Ideas (Deferred)
-type Condition any
-
-// func If[Out any](condition Condition, do func(WorkflowContext)) Output[Condition, Out]    {} // Redundant with above?
-func While[Out any](condition Condition, do func(WorkflowContext)) Output[Condition, Out] {}
-
-
-func FanOut[In, Out any](node Output[In, Out], fun func(Context, In)) []Output[In, Out] {
-    return nil
-}
-
-func ChainOfThought[In, Out, ROut any](n Output[In, Out], rewardModel NodeType[Out, ROut]) Output[In, Out] {
-    return nil
-}
-*/

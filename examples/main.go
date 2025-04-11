@@ -31,7 +31,8 @@ Your output must be structured in the JSON format specified by the provided sche
 
 var carnistUserMsg = `"Look, veganism is completely unnatural - our ancestors have been eating meat for millions of years and that's just how nature intended it. Plus, studies show that plants actually feel pain too, so you're not really saving anything by eating them instead of animals. And what about all the small family farms that would go bankrupt if everyone stopped eating meat? You're just trying to destroy people's livelihoods with your extreme ideology."`
 
-func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.Outputer[QuestionAnswer] {
+// Updated function signature to return heart.Output
+func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.Output[QuestionAnswer] {
 	threeQuestionsLLMNode := openai.CreateChatCompletion(ctx, "three-questions-llm")
 
 	threeQuestionsMiddlewareDef := openaimiddleware.WithStructuredOutput[VeganQuestions](
@@ -40,13 +41,14 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 		threeQuestionsLLMNode,   // Tell the middleware which node definition to wrap
 	)
 	// Bind the initial input to the *middleware* definition.
-	// This returns the Noder for the middleware step.
-	threeQuestions := threeQuestionsMiddlewareDef.Bind(heart.Into(in)) // Outputer[VeganQuestions]
+	// This returns the Node for the middleware step.
+	threeQuestionsNode := threeQuestionsMiddlewareDef.Bind(heart.Into(in)) // Node[Request, VeganQuestions]
 
+	// Use the output handle (Output[VeganQuestions]) from the node
 	firstQuestionRequest := heart.Transform(
 		ctx,
 		"first-question-request",
-		threeQuestions,
+		threeQuestionsNode, // Pass the Node (which satisfies Output)
 		func(ctx context.Context, questions VeganQuestions) (goopenai.ChatCompletionRequest, error) {
 			return goopenai.ChatCompletionRequest{
 				Model:     goopenai.GPT4oMini,
@@ -62,7 +64,7 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 					},
 				},
 			}, nil
-		})
+		}) // Returns Node[VeganQuestions, Request]
 
 	firstQuestionAnswerLLMNode := openai.CreateChatCompletion(ctx, "first-question-answer-llm") // Node for the actual LLM call
 	answerToFirstQuestionMiddlewareDef := openaimiddleware.WithStructuredOutput[QuestionAnswer](
@@ -71,9 +73,10 @@ func handleCarnism(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.O
 		firstQuestionAnswerLLMNode, // Tell the middleware to wrap the second LLM call
 	)
 	// Bind the request (output of the transform) to the *second middleware* definition.
-	answerToFirstQuestion := answerToFirstQuestionMiddlewareDef.Bind(firstQuestionRequest) // Outputer[QuestionAnswer]
+	answerToFirstQuestionNode := answerToFirstQuestionMiddlewareDef.Bind(firstQuestionRequest) // Node[Request, QuestionAnswer]
 
-	return answerToFirstQuestion
+	// Return the final output handle (Node satisfies Output)
+	return answerToFirstQuestionNode
 }
 
 func main() {
@@ -97,7 +100,7 @@ func main() {
 
 	carnistDebunkerWorkflow := heart.DefineWorkflow(handleCarnism, heart.WithStore(fileStore))
 
-	// New is now non-blocking and returns a result handle
+	// New is now non-blocking and returns a result handle (WorkflowOutput)
 	resultHandle := carnistDebunkerWorkflow.New(ctx, goopenai.ChatCompletionRequest{
 		Messages: []goopenai.ChatCompletionMessage{
 			{Content: systemMsg, Role: goopenai.ChatMessageRoleSystem},
@@ -105,13 +108,12 @@ func main() {
 		},
 		Model:     goopenai.GPT4oMini,
 		MaxTokens: 2048,
-		// Temperature: 1.000000, // Using default temperature
 	})
 
 	fmt.Println("Workflow started...")
 
-	// Block and wait for the result using Get()
-	answer, err := resultHandle.Get()
+	// Block and wait for the result using Out() on the WorkflowOutput
+	answer, err := resultHandle.Out()
 	if err != nil {
 		fmt.Println("error running workflow: ", err)
 		return

@@ -22,6 +22,7 @@ var (
 	errDependencyWrongType  = errors.New("dependency provided with wrong type")
 )
 
+// DependencyInjector is an interface for defining dependency constructors.
 type DependencyInjector interface {
 	nodes() []NodeTypeID
 	construct() any
@@ -41,11 +42,14 @@ func (d dependencyInjector[Params, Dep]) construct() any {
 	return d.new(d.params)
 }
 
+// DependencyInjectable is an interface for node initializers that accept dependencies.
 type DependencyInjectable[Dep any] interface {
 	NodeInitializer
 	DependencyInject(Dep)
 }
 
+// NodesDependencyInject creates a DependencyInjector for a specific dependency type
+// and associates it with the provided node initializers.
 func NodesDependencyInject[Params, Dep any](params Params, new func(Params) Dep, nodes ...DependencyInjectable[Dep]) DependencyInjector {
 	d := dependencyInjector[Params, Dep]{params: params, new: new}
 	d._nodes = make([]NodeTypeID, 0, len(nodes))
@@ -56,6 +60,7 @@ func NodesDependencyInject[Params, Dep any](params Params, new func(Params) Dep,
 	return &d
 }
 
+// Dependencies registers and constructs dependencies defined by DependencyInjectors.
 func Dependencies(constructors ...DependencyInjector) error {
 	// TODO: Make concurrent
 	for _, c := range constructors {
@@ -101,19 +106,20 @@ func dependencyInject(node any, id NodeTypeID) error {
 	userNode := reflect.ValueOf(node)
 	method := userNode.MethodByName("DependencyInject")
 	if !method.IsValid() {
+		// Node doesn't implement the injection interface, which is fine.
 		return nil
 	}
 
 	methodType := method.Type()
 	if methodType.NumIn() != 1 || methodType.NumOut() != 0 {
-		// TODO: Maybe emit warn here
+		// TODO: Maybe emit warn here for incorrect signature?
 		return nil
 	}
 
 	dep, ok := getNodeDependency(id)
 	if !ok {
 		// Dependency hasn't been initialized for this node type
-		// This is likely user error
+		// This is likely user error, the dependency should have been provided via Dependencies().
 		return fmt.Errorf("no dependency provided for node type %q: %w", id, errNoDependencyProvided)
 	}
 
@@ -122,7 +128,7 @@ func dependencyInject(node any, id NodeTypeID) error {
 	expectedParamType := methodType.In(0)
 
 	if !depVal.Type().AssignableTo(expectedParamType) {
-		return fmt.Errorf("dependency with wrong type provided for node type: %q: %w", id, errDependencyWrongType)
+		return fmt.Errorf("dependency with wrong type provided for node type: %q: expected %s, got %s: %w", id, expectedParamType, depVal.Type(), errDependencyWrongType)
 	}
 
 	method.Call([]reflect.Value{depVal})

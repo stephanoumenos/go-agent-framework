@@ -1,3 +1,4 @@
+// ./examples/tools/main.go
 package main
 
 import (
@@ -84,7 +85,8 @@ var _ openaimiddleware.Tool = (*GetCurrentWeatherTool)(nil)
 // --- Workflow Definition ---
 
 // toolWorkflowHandler defines the workflow using the tool middleware.
-func toolWorkflowHandler(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.Outputer[goopenai.ChatCompletionResponse] {
+// Returns heart.Output containing the final response.
+func toolWorkflowHandler(ctx heart.Context, in goopenai.ChatCompletionRequest) heart.Output[goopenai.ChatCompletionResponse] {
 
 	// 1. Instantiate the tool(s)
 	weatherTool := &GetCurrentWeatherTool{}
@@ -101,10 +103,10 @@ func toolWorkflowHandler(ctx heart.Context, in goopenai.ChatCompletionRequest) h
 	)
 
 	// 4. Bind the initial input request to the middleware node. Bind starts execution.
-	finalOutputNoder := toolsMiddlewareDef.Bind(heart.Into(in))
+	finalOutputNode := toolsMiddlewareDef.Bind(heart.Into(in)) // Returns Node
 
-	// 5. Return the outputer from the middleware node
-	return finalOutputNoder
+	// 5. Return the output handle from the middleware node (Node satisfies Output)
+	return finalOutputNode
 }
 
 // --- Main Execution ---
@@ -149,10 +151,10 @@ func main() {
 	// 4. Execute Workflow - New returns immediately
 	fmt.Println("Executing workflow...")
 	workflowCtx := context.Background()
-	resultHandle := toolWorkflow.New(workflowCtx, initialRequest)
+	resultHandle := toolWorkflow.New(workflowCtx, initialRequest) // Returns Output
 
 	// 5. Get Result (blocking)
-	finalResponse, err := resultHandle.Get()
+	finalResponse, err := resultHandle.Out() // Call Out on the Output handle
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow execution failed: %v\n", err)
 		os.Exit(1)
@@ -165,10 +167,6 @@ func main() {
 		fmt.Println(finalMessage.Content)
 		fmt.Println("------------------------------")
 		fmt.Printf("Finish Reason: %s\n", finalResponse.Choices[0].FinishReason)
-		// Optional: Log tool calls if they exist in the final message (shouldn't usually happen if loop completed)
-		// if len(finalMessage.ToolCalls) > 0 {
-		//  fmt.Printf("DEBUG: Final message contained tool calls: %+v\n", finalMessage.ToolCalls)
-		// }
 	} else {
 		fmt.Println("Workflow completed, but no choices returned in the final response.")
 	}

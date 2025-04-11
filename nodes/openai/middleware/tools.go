@@ -27,7 +27,7 @@ var (
 	errDependencyNotSet = errors.New("openai client dependency not set in tools middleware")
 )
 
-// --- Tool Definition Interfaces/Structs (Mostly Unchanged) ---
+// --- Tool Definition Interfaces/Structs ---
 
 // Tool represents a function callable by the LLM.
 type Tool interface {
@@ -58,6 +58,7 @@ type ToolsMiddlewareInitializer struct {
 	client *openai.Client
 }
 
+// ID returns the type identifier for this initializer.
 func (i *ToolsMiddlewareInitializer) ID() heart.NodeTypeID {
 	return toolsMiddlewareNodeTypeID
 }
@@ -177,7 +178,7 @@ func (r *toolsMiddlewareResolver) ExecuteMiddleware(ctx context.Context, origina
 		toolResponseMessages := make([]openai.ChatCompletionMessage, 0, len(toolCalls))
 		for _, toolCall := range toolCalls {
 			if toolCall.Type != openai.ToolTypeFunction {
-				continue
+				continue // Ignore non-function tool calls if any appear.
 			}
 			functionCall := toolCall.Function
 			tool, exists := r.toolMap[functionCall.Name]
@@ -202,6 +203,8 @@ func (r *toolsMiddlewareResolver) ExecuteMiddleware(ctx context.Context, origina
 			// Execute the tool, passing the loop's context.
 			toolResult, err := tool.Call(callCtx, parsedParams)
 			if err != nil {
+				// Consider how to handle tool execution errors. Return immediately? Append an error message?
+				// Current behavior: Fail the entire operation.
 				return openai.ChatCompletionResponse{}, fmt.Errorf("error in %s: %w for tool %s: %w", r.nodeTypeID, errToolExecutionFailed, functionCall.Name, err)
 
 			}
@@ -226,11 +229,13 @@ func (r *toolsMiddlewareResolver) ExecuteMiddleware(ctx context.Context, origina
 	}
 
 	// If loop finishes due to max iterations, return the last response received.
+	// This indicates a potential problem (e.g., LLM stuck in a loop asking for tools).
 	fmt.Printf("WARN: Tool execution loop reached max iterations (%d) in %s.\n", maxToolIterations, r.nodeTypeID)
 	return finalResp, nil
 }
 
 // copyMessages creates a new slice and copies message content.
+// Important to avoid modifying the original request's message slice.
 func copyMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
 	newMessages := make([]openai.ChatCompletionMessage, len(messages))
 	copy(newMessages, messages)
@@ -250,6 +255,9 @@ func WithTools(
 ) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] { // Input/Output types remain the same.
 
 	if len(tools) == 0 {
+		// If no tools are provided, this middleware is a no-op.
+		// Log a warning and return the original 'next' definition.
+		// TODO: Use a proper logger from context or options if available.
 		fmt.Printf("WARN: WithTools called with no tools for nodeID %s. Middleware is bypassed.\n", nodeID)
 		return next // Pass through if no tools
 	}

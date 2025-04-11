@@ -1,3 +1,4 @@
+// ./nodes/openai/middleware/structuredoutput.go
 package middleware
 
 import (
@@ -11,7 +12,6 @@ import (
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
-// TODO: Maybe export this from heart
 // genericNodeInitializer remains useful
 type genericNodeInitializer struct {
 	id heart.NodeTypeID
@@ -92,11 +92,11 @@ func (r *structuredOutputResolver[SOut]) ExecuteMiddleware(ctx context.Context, 
 
 	// 4. Execute the *next* node in the chain.
 	// Bind the *modified* input request (`modifiedReq`) to the `next` node's definition.
-	// This creates the runtime instance (Noder) for the actual LLM call and starts its execution.
-	llmNoder := r.nextDefinition.Bind(heart.Into(modifiedReq)) // Bind returns Noder
+	// This creates the runtime instance (Node) for the actual LLM call and starts its execution.
+	llmNode := r.nextDefinition.Bind(heart.Into(modifiedReq)) // Bind returns Node
 
-	// Call Out on the next node Noder. This now blocks until the LLM call completes.
-	llmResponse, err := llmNoder.Out()
+	// Call Out on the next node. This now blocks until the LLM call completes.
+	llmResponse, err := llmNode.Out()
 	if err != nil {
 		// If the underlying LLM call fails, propagate the error.
 		return sOut, fmt.Errorf("error from underlying node wrapped by %s: %w", r.nodeTypeID, err)
