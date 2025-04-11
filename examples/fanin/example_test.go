@@ -1,6 +1,6 @@
 //go:build integration
 
-// ./examples/fanin/main_test.go
+// ./examples/fanin/example_test.go
 package main
 
 import (
@@ -10,6 +10,7 @@ import (
 	"heart/nodes/openai" // Ensure this import path matches your project structure
 	"heart/store"
 	"strings"
+	"sync" // Import sync package
 	"testing"
 	"time"
 
@@ -19,19 +20,20 @@ import (
 )
 
 // --- Mock OpenAI Client ---
-// This mock satisfies the clientiface.ClientInterface defined previously.
-
 type mockOpenAIClient struct {
 	// Store predefined responses based on a characteristic of the request
 	responses map[string]goopenai.ChatCompletionResponse
 	errors    map[string]error
 	// Track calls for assertion
+	callsMtx                  sync.Mutex // Added mutex
 	CreateChatCompletionCalls []goopenai.ChatCompletionRequest
 }
 
 // CreateChatCompletion implements the required method from ClientInterface.
 func (m *mockOpenAIClient) CreateChatCompletion(ctx context.Context, req goopenai.ChatCompletionRequest) (goopenai.ChatCompletionResponse, error) {
-	m.CreateChatCompletionCalls = append(m.CreateChatCompletionCalls, req) // Track call
+	m.callsMtx.Lock()                                                      // Lock before accessing shared slice
+	m.CreateChatCompletionCalls = append(m.CreateChatCompletionCalls, req) // Track call safely
+	m.callsMtx.Unlock()                                                    // Unlock after accessing
 
 	// Determine which response to give based on system prompt content
 	key := ""
@@ -52,6 +54,7 @@ func (m *mockOpenAIClient) CreateChatCompletion(ctx context.Context, req goopena
 		}
 	}
 
+	// Assuming maps are read-only after setup
 	if err, exists := m.errors[key]; exists {
 		fmt.Printf("[Mock OpenAI] Returning error for key '%s'\n", key)
 		return goopenai.ChatCompletionResponse{}, err
@@ -62,11 +65,10 @@ func (m *mockOpenAIClient) CreateChatCompletion(ctx context.Context, req goopena
 	}
 
 	fmt.Printf("[Mock OpenAI] No predefined response/error for key '%s'. Returning default empty success.\n", key)
-	// Default response or error if no match
 	return goopenai.ChatCompletionResponse{
 		Choices: []goopenai.ChatCompletionChoice{{
 			Message:      goopenai.ChatCompletionMessage{Content: "Mocked default response"},
-			FinishReason: goopenai.FinishReasonStop, // Default needs FinishReason too
+			FinishReason: goopenai.FinishReasonStop, // FinishReason belongs inside ChatCompletionChoice
 		}},
 	}, nil
 }
@@ -79,11 +81,11 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 
 	t.Parallel() // Mark test as parallelizable
 
-	// 1. Setup Mock Client with expected responses, including FinishReason
+	// 1. Setup Mock Client with expected responses, placing FinishReason correctly
 	mockClient := &mockOpenAIClient{
 		responses: map[string]goopenai.ChatCompletionResponse{
 			"optimist": {
-				Choices: []goopenai.ChatCompletionChoice{{
+				Choices: []goopenai.ChatCompletionChoice{{ // FinishReason goes inside Choice
 					Message:      goopenai.ChatCompletionMessage{Content: "Mocked positive: AGI research will unlock unprecedented progress!"},
 					FinishReason: goopenai.FinishReasonStop,
 				}},
@@ -91,14 +93,14 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 				// Usage: goopenai.Usage{ PromptTokens: 5, CompletionTokens: 10, TotalTokens: 15 },
 			},
 			"pessimist": {
-				Choices: []goopenai.ChatCompletionChoice{{
+				Choices: []goopenai.ChatCompletionChoice{{ // FinishReason goes inside Choice
 					Message:      goopenai.ChatCompletionMessage{Content: "Mocked negative: Custom AGI is a dangerous path filled with risk."},
 					FinishReason: goopenai.FinishReasonStop,
 				}},
 				// Usage: goopenai.Usage{ PromptTokens: 5, CompletionTokens: 10, TotalTokens: 15 },
 			},
 			"realistic": {
-				Choices: []goopenai.ChatCompletionChoice{{
+				Choices: []goopenai.ChatCompletionChoice{{ // FinishReason goes inside Choice
 					Message:      goopenai.ChatCompletionMessage{Content: "Mocked balanced: Investing in AGI requires careful consideration of benefits and risks."},
 					FinishReason: goopenai.FinishReasonStop,
 				}},
@@ -109,20 +111,12 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	}
 
 	// 2. Setup Dependencies & Store
-	// Assuming a mechanism to reset global DI state isn't implemented,
-	// running tests in parallel might interfere if DI state is truly global.
-	// For now, we proceed assuming injection works per test or is managed.
 	err := heart.Dependencies(openai.Inject(mockClient))
 	require.NoError(t, err, "Failed to inject mock dependencies")
 
 	memStore := store.NewMemoryStore() // Use memory store for speed and isolation
 
 	// 3. Define Workflow
-	// Assuming `threePerspectivesWorkflow` from the original example is accessible.
-	// This might require adjustments based on your actual package structure.
-	// If this file is in `examples/fanin` and package is `main_test`,
-	// you might need to move `threePerspectivesWorkflow` out of main or duplicate logic.
-	// For this example, we assume it's callable.
 	threePerspectiveWorkflowDef := heart.DefineWorkflow(threePerspectivesWorkflow, heart.WithStore(memStore))
 
 	// 4. Prepare Input
@@ -139,6 +133,10 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	// 7. Assertions
 	require.NoError(t, err, "Workflow execution failed") // Should pass now
 
+	// Lock before accessing shared state for assertion
+	mockClient.callsMtx.Lock()
+	defer mockClient.callsMtx.Unlock()
+
 	// Check that the mock was called as expected
 	require.Len(t, mockClient.CreateChatCompletionCalls, 3, "Expected three calls to OpenAI mock (optimist, pessimist, realistic)")
 
@@ -152,7 +150,25 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	assert.NotEmpty(t, perspectivesResult.Realistic)
 	assert.Contains(t, perspectivesResult.Realistic, "Mocked balanced", "Realistic response mismatch")
 
-	assert.Contains(t, mockClient.CreateChatCompletionCalls[0].Messages[0].Content, "technology evangelist")
-	assert.Contains(t, mockClient.CreateChatCompletionCalls[1].Messages[0].Content, "doom-and-gloom")
-	assert.Contains(t, mockClient.CreateChatCompletionCalls[2].Messages[1].Content, "Based on the following two perspectives")
+	// Verify the presence of the correct prompts in the first two calls, regardless of order
+	firstTwoCalls := mockClient.CreateChatCompletionCalls[:2]
+	foundOptimistPrompt := false
+	foundPessimistPrompt := false
+	for _, call := range firstTwoCalls {
+		if len(call.Messages) > 0 && call.Messages[0].Role == goopenai.ChatMessageRoleSystem {
+			if strings.Contains(call.Messages[0].Content, "technology evangelist") {
+				foundOptimistPrompt = true
+			}
+			if strings.Contains(call.Messages[0].Content, "doom-and-gloom") {
+				foundPessimistPrompt = true
+			}
+		}
+	}
+	assert.True(t, foundOptimistPrompt, "System prompt for optimist call not found in the first two calls")
+	assert.True(t, foundPessimistPrompt, "System prompt for pessimist call not found in the first two calls")
+
+	// Verify the third call (realistic) - its order should be deterministic
+	require.GreaterOrEqual(t, len(mockClient.CreateChatCompletionCalls[2].Messages), 2, "Realistic call should have at least 2 messages")
+	assert.Contains(t, mockClient.CreateChatCompletionCalls[2].Messages[0].Content, "balanced, realistic synthesizer", "Third call should be realistic synthesizer")
+	assert.Contains(t, mockClient.CreateChatCompletionCalls[2].Messages[1].Content, "Based on the following two perspectives", "Third call user prompt mismatch")
 }
