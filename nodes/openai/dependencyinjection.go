@@ -2,19 +2,24 @@
 package openai
 
 import (
+	// remove context import if ClientInterface doesn't need it directly here
 	"heart"
-	openaimiddleware "heart/nodes/openai/middleware" // Import middleware package
-
-	openai "github.com/sashabaranov/go-openai"
+	"heart/nodes/openai/clientiface" // <-- IMPORT the new interface package
+	openaimiddleware "heart/nodes/openai/middleware"
+	// Don't need the main openai import here if ClientInterface is defined elsewhere
+	// openai "github.com/sashabaranov/go-openai"
 )
 
-// Inject registers the OpenAI client for all relevant initializers in this package scope.
-func Inject(client *openai.Client) heart.DependencyInjector {
-	// Register the *openai.Client dependency for all nodes/initializers that need it.
-	return heart.NodesDependencyInject(client, func(c *openai.Client) *openai.Client { return c },
-		// List all initializers requiring *openai.Client:
+// Inject now accepts the interface from the new package
+func Inject(client clientiface.ClientInterface) heart.DependencyInjector { // Use clientiface.ClientInterface
+	// Adjust type arguments for NodesDependencyInject
+	return heart.NodesDependencyInject[clientiface.ClientInterface, clientiface.ClientInterface]( // Use clientiface.ClientInterface
+		client,
+		func(c clientiface.ClientInterface) clientiface.ClientInterface { return c },
+		// Initializers list remains the same, but they must now expect clientiface.ClientInterface
 		&createChatCompletionInitializer{},
 		&openaimiddleware.ToolsMiddlewareInitializer{},
-		// Add any other future initializers from the openai package/subpackages here...
 	)
 }
+
+// No need for the ClientInterface definition here anymore

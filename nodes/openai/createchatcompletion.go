@@ -4,6 +4,7 @@ package openai
 import (
 	"context"
 	"heart"
+	"heart/nodes/openai/clientiface"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -17,7 +18,8 @@ func CreateChatCompletion(ctx heart.Context, nodeID heart.NodeID) heart.NodeDefi
 
 // createChatCompletionInitializer handles dependency injection for the chat completion node.
 type createChatCompletionInitializer struct {
-	client *openai.Client
+	// Store the client *interface*
+	client clientiface.ClientInterface // CHANGED: Use the interface type
 }
 
 // ID returns the type identifier for this initializer.
@@ -25,8 +27,8 @@ func (c *createChatCompletionInitializer) ID() heart.NodeTypeID {
 	return createChatCompletionNodeTypeID
 }
 
-// DependencyInject receives the OpenAI client.
-func (c *createChatCompletionInitializer) DependencyInject(client *openai.Client) {
+// DependencyInject receives the OpenAI client *interface*.
+func (c *createChatCompletionInitializer) DependencyInject(client clientiface.ClientInterface) { // CHANGED: Accept the interface
 	c.client = client
 }
 
@@ -38,24 +40,25 @@ type createChatCompletion struct {
 
 // Init sets up the initializer for dependency injection.
 func (c *createChatCompletion) Init() heart.NodeInitializer {
-	// Create the initializer instance when the node is initialized.
 	c.createChatCompletionInitializer = &createChatCompletionInitializer{}
 	return c.createChatCompletionInitializer
 }
 
-// Get executes the OpenAI API call.
+// Get executes the OpenAI API call using the interface.
 func (c *createChatCompletion) Get(ctx context.Context, in openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
-	// Check if the client was injected correctly.
 	if c.createChatCompletionInitializer == nil || c.client == nil {
-		// This should ideally not happen if DI setup is correct.
-		return openai.ChatCompletionResponse{}, heart.ErrDependencyNotSet // TODO: Define this error
+		// Use the existing error or define a more specific one
+		return openai.ChatCompletionResponse{}, heart.ErrDependencyNotSet
 	}
+	// Call the method via the interface - this works for both real and mock clients
 	return c.client.CreateChatCompletion(ctx, in)
 }
 
 // Ensure the resolver implements NodeResolver.
 var _ heart.NodeResolver[openai.ChatCompletionRequest, openai.ChatCompletionResponse] = (*createChatCompletion)(nil)
 
-// Ensure the initializer implements required interfaces.
+// Ensure the initializer implements required interfaces (including the updated DependencyInjectable).
 var _ heart.NodeInitializer = (*createChatCompletionInitializer)(nil)
-var _ heart.DependencyInjectable[*openai.Client] = (*createChatCompletionInitializer)(nil)
+
+// Ensure it implements DependencyInjectable with the *interface* type
+var _ heart.DependencyInjectable[clientiface.ClientInterface] = (*createChatCompletionInitializer)(nil) // CHANGED: Use interface
