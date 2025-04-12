@@ -4,168 +4,228 @@ package heart
 import (
 	"context"
 	"fmt"
-	"heart/store"
 	"sync/atomic"
 	"time"
+
+	"heart/store"
 
 	"github.com/google/uuid"
 )
 
-var defaultStore = store.NewMemoryStore()
+// defaultStore, WorkflowOutput, WorkflowDefinition remain the same...
+var defaultStore store.Store = store.NewMemoryStore()
 
-// WorkflowOutput holds the eventual result of a workflow execution.
-// It implements the Output[Out] interface.
-type WorkflowOutput[Out any] struct {
+type WorkflowOutput[Out any] struct { /* ... */
 	value Out
 	err   error
 	done  chan struct{}
+	uuid  WorkflowUUID
 }
 
-// Out blocks until the workflow completes and returns the final output and error.
-func (r *WorkflowOutput[Out]) Out() (Out, error) {
-	<-r.done // Wait for the workflow goroutine to signal completion
-	return r.value, r.err
-}
+func (r *WorkflowOutput[Out]) Out() (Out, error)     { /* ... */ <-r.done; return r.value, r.err }
+func (r *WorkflowOutput[Out]) Done() <-chan struct{} { /* ... */ return r.done }
+func (r *WorkflowOutput[Out]) GetUUID() WorkflowUUID { /* ... */ return r.uuid }
 
-// Done returns a channel that is closed when the workflow completes.
-func (r *WorkflowOutput[Out]) Done() <-chan struct{} {
-	return r.done
-}
-
-// Ensure WorkflowOutput implements Output interface.
 var _ Output[any] = (*WorkflowOutput[any])(nil)
 
-// WorkflowDefinition holds the definition of a workflow, including its handler and store.
-type WorkflowDefinition[In, Out any] struct {
+type WorkflowDefinition[In, Out any] struct { /* ... */
 	handler HandlerFunc[In, Out]
 	store   store.Store
 }
 
-// New starts a new workflow instance in a separate goroutine and returns a WorkflowOutput immediately.
-// The WorkflowOutput can be used to block and wait for the final output using the Out method,
-// or check for completion using the Done channel.
-// It accepts a parent context which will be used for the workflow execution.
+// New starts a new workflow instance.
 func (w WorkflowDefinition[In, Out]) New(parentCtx context.Context, in In) Output[Out] {
+	// ... (UUID, result struct, execCtx, graph creation logic remain the same) ...
 	workflowUUID := WorkflowUUID(uuid.New())
-
-	result := &WorkflowOutput[Out]{
-		done: make(chan struct{}),
-	}
-
+	result := &WorkflowOutput[Out]{done: make(chan struct{}), uuid: workflowUUID}
 	execCtx, cancel := context.WithCancel(parentCtx)
-
-	// Create the graph entry immediately.
-	err := w.store.Graphs().CreateGraph(execCtx, workflowUUID.String())
+	err := w.store.Graphs().CreateGraph(parentCtx, workflowUUID.String())
 	if err != nil {
 		result.err = fmt.Errorf("failed to create graph record for workflow %s: %w", workflowUUID, err)
-		close(result.done) // Signal immediate completion (with error)
+		close(result.done)
 		cancel()
 		return result
 	}
+	fmt.Printf("INFO: Workflow %s graph created in store.\n", workflowUUID)
 
-	// Create the initial root context for the workflow.
-	workflowCtx := Context{
-		ctx:       execCtx, // Use the cancellable execution context
-		nodeCount: &atomic.Int64{},
-		store:     w.store,
-		uuid:      workflowUUID,
-		scheduler: newWorkflowScheduler(),
-		BasePath:  "/", // Initialize BasePath for the root context
-		cancel:    cancel,
-	}
+	// Create the root workflow context with the execution registry.
+	workflowCtx := Context{ /* ... */ ctx: execCtx, nodeCount: &atomic.Int64{}, store: w.store, uuid: workflowUUID, registry: newExecutionRegistry(), BasePath: "/", cancel: cancel}
 
-	// Run the actual workflow execution in a goroutine.
+	// --- Run Workflow Handler Goroutine ---
 	go func() {
-		// Ensure the done channel is closed and context is cancelled on exit.
+		// ... (defers for done, cancel, panic handling remain the same) ...
 		defer close(result.done)
-		defer cancel()
+		defer cancel() // Ensure context is cancelled when workflow goroutine exits
+		defer func() {
+			if r := recover(); r != nil {
+				panicErr := fmt.Errorf("panic recovered during workflow execution %s: %v", workflowUUID, r)
+				fmt.Printf("CRITICAL: %v\n", panicErr)
+				result.err = panicErr
+				result.value = *new(Out) // Ensure zero value on panic
+			}
+		}()
 
-		// Execute the handler and get the final output handle.
-		finalOutput := w.handler(workflowCtx, in)
+		fmt.Printf("INFO: Workflow %s handler starting...\n", workflowUUID)
+		finalNodeBlueprint := w.handler(workflowCtx, in) // Returns Node[Out]
 
-		// Call Out() on the final Output returned by the handler.
-		// This blocks until the entire workflow graph resolves.
-		finalValue, execErr := finalOutput.Out()
-
-		// Store the result.
-		result.value = finalValue
-		result.err = execErr
-
-		// Check if the execution context was cancelled.
-		if execCtx.Err() != nil && execErr == nil {
-			result.err = execCtx.Err()
+		if finalNodeBlueprint == nil { /* ... */
+			result.err = fmt.Errorf("workflow handler returned a nil final node blueprint handle (workflow: %s)", workflowUUID)
+			fmt.Printf("ERROR: %v\n", result.err)
+			return
 		}
+		fmt.Printf("INFO: Workflow %s handler returned final blueprint: %s\n", workflowUUID, finalNodeBlueprint.internal_getPath())
+
+		// Trigger resolution of the final blueprint using the registry.
+		fmt.Printf("INFO: Workflow %s resolving final blueprint...\n", workflowUUID)
+		// internalResolve now correctly returns the specific Out type or an error.
+		finalValue, execErr := internalResolve[Out](workflowCtx, finalNodeBlueprint)
+
+		// Store the result or error.
+		result.err = execErr
+		if execErr == nil {
+			// Resolution successful, finalValue is already the correct type Out.
+			result.value = finalValue
+			fmt.Printf("INFO: Workflow %s final result resolved successfully.\n", workflowUUID)
+		} else {
+			fmt.Printf("ERROR: Workflow %s final resolution failed: %v\n", workflowUUID, execErr)
+			// Ensure result.value is the zero value if there was an error
+			result.value = *new(Out)
+		}
+
+		// Check for context cancellation after resolution but before signalling done.
+		if execCtx.Err() != nil && result.err == nil {
+			fmt.Printf("WARN: Workflow %s context cancelled after resolution but before completion signal (%v).\n", workflowUUID, execCtx.Err())
+			result.err = execCtx.Err() // Report context error if no primary execution error occurred
+		}
+
 	}()
 
 	return result // Return the WorkflowOutput handle immediately.
 }
 
-// WorkflowUUID is an alias for uuid.UUID for clarity.
+// WorkflowUUID alias remains the same.
 type WorkflowUUID = uuid.UUID
 
-// Context carries workflow execution state and context, including hierarchical path information.
-type Context struct {
-	ctx       context.Context // The standard Go context
+// Context struct remains the same.
+type Context struct { /* ... */
+	ctx       context.Context
 	nodeCount *atomic.Int64
 	store     store.Store
 	uuid      WorkflowUUID
-	scheduler *workflowScheduler
-	BasePath  NodePath // The base path for nodes defined within this context
-	cancel    context.CancelFunc
+	registry  *executionRegistry
+	BasePath  NodePath
+	cancel    context.CancelFunc // Added cancel func
 }
 
-// Done returns a channel that's closed when the workflow execution context is cancelled.
-func (c Context) Done() <-chan struct{} {
-	return c.ctx.Done()
+// internalResolve uses the registry to trigger node execution and returns the specific Out type.
+// Parameter type changed to accept any node blueprint.
+func internalResolve[Out any](c Context, nodeBlueprint any) (Out, error) {
+	var zero Out // Zero value for return on error
+
+	// Handle `into` nodes directly
+	if _, isInto := nodeBlueprint.(*into[Out]); isInto {
+		// Use interface assertion for internal_out
+		type internalOutGetter interface{ internal_out() (any, error) }
+		if getter, okAssert := nodeBlueprint.(internalOutGetter); okAssert {
+			outAny, err := getter.internal_out()
+			if err != nil {
+				return zero, err // Return the error from the 'into' node
+			}
+			// Type assert the 'any' result from internal_out to the specific Out type.
+			typedOut, ok := outAny.(Out)
+			if !ok {
+				var expectedType Out
+				actualType := "nil"
+				if outAny != nil {
+					actualType = fmt.Sprintf("%T", outAny)
+				}
+				return zero, fmt.Errorf("internalResolve: type assertion failed for 'into' node result: expected %T, got %s", expectedType, actualType)
+			}
+			return typedOut, nil
+		}
+		// Fallthrough if assertion fails (should not happen for *into)
+	}
+
+	// Cast to a Node type we can work with to get path etc.
+	// Assert to Node[Out] specifically to ensure type compatibility.
+	nodeBlueprintNode, okCast := nodeBlueprint.(Node[Out])
+	if !okCast {
+		// This indicates a programming error - the blueprint is not compatible with the expected Out type.
+		return zero, fmt.Errorf("internalResolve: provided node blueprint (%T) is not compatible with expected output type Node[%T]", nodeBlueprint, zero)
+	}
+
+	// For regular nodes, delegate to the registry
+	if c.registry == nil {
+		panic(fmt.Sprintf("internal error: execution registry is nil in context for workflow %s", c.uuid))
+	}
+
+	// Get or create the execution instance for the blueprint
+	// Pass the correctly asserted Node[Out] blueprint handle.
+	execAny := getOrCreateExecution(c.registry, nodeBlueprintNode, c)
+
+	// Assert the returned 'any' to the 'executioner' interface
+	exec, okExec := execAny.(executioner)
+	if !okExec {
+		// This indicates a failure in createGenericExecution or registry logic
+		panic(fmt.Sprintf("internal error: registry returned non-executioner type %T for path %s", execAny, nodeBlueprintNode.internal_getPath()))
+	}
+
+	// Trigger/await execution via the executioner interface
+	// getResult returns (any, error).
+	resultAny, execErr := exec.getResult()
+	if execErr != nil {
+		return zero, execErr // Return the error from execution directly.
+	}
+
+	// Type assert the 'any' result from getResult to the specific Out type.
+	resultTyped, okAssert := resultAny.(Out)
+	if !okAssert {
+		var expectedType Out // Use zero value to get type name
+		actualType := "nil"
+		if resultAny != nil {
+			actualType = fmt.Sprintf("%T", resultAny)
+		}
+		// This indicates an internal error - the execution returned the wrong type.
+		return zero, fmt.Errorf("internalResolve: type assertion failed for node execution result (path: %s): expected %T, got %s", nodeBlueprintNode.internal_getPath(), expectedType, actualType)
+	}
+
+	// Return the successfully resolved and type-asserted value.
+	return resultTyped, nil
 }
 
-// Err returns the reason for the context cancellation after Done is closed.
-func (c Context) Err() error {
-	return c.ctx.Err()
-}
+// Standard context methods remain the same...
+func (c Context) Done() <-chan struct{}                   { /* ... */ return c.ctx.Done() }
+func (c Context) Err() error                              { /* ... */ return c.ctx.Err() }
+func (c Context) Value(key any) any                       { /* ... */ return c.ctx.Value(key) }
+func (c Context) Deadline() (deadline time.Time, ok bool) { /* ... */ return c.ctx.Deadline() }
 
-// Value returns the value associated with this context for key, or nil.
-func (c Context) Value(key any) any {
-	return c.ctx.Value(key)
-}
+// HandlerFunc signature updated to return Node[Out].
+type HandlerFunc[In, Out any] func(ctx Context, in In) Node[Out] // Changed: return Node[Out]
 
-// Deadline returns the time when work done on behalf of this context should be canceled.
-func (c Context) Deadline() (deadline time.Time, ok bool) {
-	return c.ctx.Deadline()
-}
-
-// HandlerFunc defines the signature for user-provided workflow logic functions.
-// It now returns Output[Out].
-type HandlerFunc[In, Out any] func(Context, In) Output[Out]
-
-type workflowOptions struct {
-	store store.Store
-}
-
-// WorkflowOption is a functional option for configuring workflow definitions.
+// Workflow options remain the same...
+type workflowOptions struct{ store store.Store }
 type WorkflowOption func(*workflowOptions)
 
-// WithStore provides a storage backend for the workflow definition.
-func WithStore(store store.Store) WorkflowOption {
+func WithStore(store store.Store) WorkflowOption { /* ... */
 	return func(wo *workflowOptions) {
+		if store == nil {
+			panic("WithStore provided with a nil store")
+		}
 		wo.store = store
 	}
 }
 
-// DefineWorkflow creates a WorkflowDefinition with the specified handler and options.
-func DefineWorkflow[In, Out any](handler HandlerFunc[In, Out], options ...WorkflowOption) WorkflowDefinition[In, Out] {
-	var opts workflowOptions
+// DefineWorkflow remains the same structurally.
+func DefineWorkflow[In, Out any](handler HandlerFunc[In, Out], options ...WorkflowOption) WorkflowDefinition[In, Out] { /* ... */
+	opts := workflowOptions{store: defaultStore}
 	for _, option := range options {
 		option(&opts)
 	}
-
-	store := opts.store
-	if store == nil {
-		store = defaultStore // Default to in-memory store
+	if handler == nil {
+		panic("DefineWorkflow requires a non-nil handler function")
 	}
-
-	return WorkflowDefinition[In, Out]{
-		store:   store,
-		handler: handler,
+	if opts.store == nil {
+		panic("DefineWorkflow requires a non-nil store (internal error: defaultStore was nil or WithStore provided nil)")
 	}
+	return WorkflowDefinition[In, Out]{store: opts.store, handler: handler}
 }

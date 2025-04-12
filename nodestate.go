@@ -1,42 +1,50 @@
+// ./nodestate.go
 package heart
 
 import (
 	"errors"
 	"fmt"
-	// Assuming newNodeState might need time eventually, keep import if needed elsewhere
+	// time "time" // Keep if timing fields are added later
 )
 
+// nodeState represents the serializable state of a node execution instance.
+// Matches the fields persisted by nodeExecution.currentNodeStateMap() and
+// read by nodeExecution.loadOrDefineState().
 type nodeState struct {
 	Status             nodeStatus `json:"status"`
 	Error              string     `json:"error,omitempty"`                // For execution errors
 	InputPersistError  string     `json:"input_persist_error,omitempty"`  // Info about input saving failure
 	OutputPersistError string     `json:"output_persist_error,omitempty"` // Info about output saving failure
-	IsTerminal         bool       `json:"is_terminal"`
+	IsTerminal         bool       `json:"is_terminal"`                    // If this node is a terminal node in its branch
+	// TODO: Add timing fields if needed (e.g., started_at, completed_at)
+	// StartedAtStr   string     `json:"started_at,omitempty"`
+	// CompletedAtStr string     `json:"completed_at,omitempty"`
 }
 
 // toMap converts nodeState to a map suitable for storage.
-// It now includes the 'is_terminal' field.
+// This is primarily used for testing or potential future direct state manipulation.
+// The primary serialization path is nodeExecution.currentNodeStateMap().
 func (ns *nodeState) toMap() map[string]any {
 	m := map[string]any{
-		"status":      string(ns.Status),
-		"is_terminal": ns.IsTerminal, // Added
-	}
-	// Only include the error field if it's non-empty
-	if ns.Error != "" {
-		m["error"] = ns.Error
+		"status":               string(ns.Status),
+		"is_terminal":          ns.IsTerminal,
+		"input_persist_error":  ns.InputPersistError,
+		"output_persist_error": ns.OutputPersistError,
+		"error":                ns.Error, // Include even if empty to allow clearing
+		// TODO: Add timing fields
 	}
 	return m
 }
 
 // nodeStateFromMap creates a nodeState from a map retrieved from storage.
-// It now reads the 'is_terminal' field, defaulting to false if absent.
+// Used by nodeExecution.loadOrDefineState().
 func nodeStateFromMap(data map[string]any) (*nodeState, error) {
 	var ns nodeState
 
-	// Get and validate status
+	// Status (required)
 	statusVal, ok := data["status"]
 	if !ok {
-		return nil, errors.New("missing status field")
+		return nil, errors.New("missing required 'status' field in stored node data")
 	}
 	statusStr, ok := statusVal.(string)
 	if !ok {
@@ -44,54 +52,66 @@ func nodeStateFromMap(data map[string]any) (*nodeState, error) {
 	}
 	s := nodeStatus(statusStr)
 	if !s.IsValid() {
-		return nil, fmt.Errorf("invalid status value: %s", statusStr)
+		return nil, fmt.Errorf("invalid status value loaded from store: %s", statusStr)
 	}
 	ns.Status = s
 
-	// Get error (optional)
+	// Error (optional string)
 	if errVal, ok := data["error"]; ok {
-		// Only assign if it's a non-empty string
-		if errStr, ok := errVal.(string); ok && errStr != "" {
+		if errStr, ok := errVal.(string); ok {
 			ns.Error = errStr
-		} else if !ok && errVal != nil { // Allow nil, but error if it exists and isn't a string
+		} else if errVal != nil { // Allow nil, but error on wrong type
 			return nil, fmt.Errorf("invalid type for error field: expected string, got %T", errVal)
 		}
 	}
 
-	// Get is_terminal (optional, defaults to false if missing) - Added Logic
+	// Persistence Errors (optional strings)
+	if inPersistErrVal, ok := data["input_persist_error"]; ok {
+		if str, ok := inPersistErrVal.(string); ok {
+			ns.InputPersistError = str
+		} else if inPersistErrVal != nil {
+			return nil, fmt.Errorf("invalid type for input_persist_error field: expected string, got %T", inPersistErrVal)
+		}
+	}
+	if outPersistErrVal, ok := data["output_persist_error"]; ok {
+		if str, ok := outPersistErrVal.(string); ok {
+			ns.OutputPersistError = str
+		} else if outPersistErrVal != nil {
+			return nil, fmt.Errorf("invalid type for output_persist_error field: expected string, got %T", outPersistErrVal)
+		}
+	}
+
+	// IsTerminal (optional bool, defaults false)
 	if termVal, ok := data["is_terminal"]; ok {
 		if termBool, ok := termVal.(bool); ok {
 			ns.IsTerminal = termBool
-		} else {
-			// Invalid type for is_terminal, return error
+		} else if termVal != nil {
 			return nil, fmt.Errorf("invalid type for is_terminal field: expected bool, got %T", termVal)
 		}
 	} else {
-		// Key "is_terminal" is missing, default to false for backward compatibility
-		ns.IsTerminal = false
+		ns.IsTerminal = false // Default if missing
 	}
 
-	// Children field is intentionally ignored.
+	// TODO: Load timing fields if added
 
 	return &ns, nil
 }
 
-// newNodeState remains unchanged structurally but its output via toMap() is now correct.
-func newNodeState[In, Out any](n *node[In, Out]) *nodeState {
-	var errStr string
-	if n.err != nil {
-		errStr = n.err.Error()
+// newStateFromExecution creates a nodeState snapshot from a nodeExecution instance.
+// Useful for testing or debugging registry state.
+func newStateFromExecution[In, Out any](ne *nodeExecution[In, Out]) *nodeState {
+	state := &nodeState{
+		Status:             ne.status,
+		IsTerminal:         ne.isTerminal,
+		InputPersistError:  ne.inputPersistenceErr,
+		OutputPersistError: ne.outputPersistenceErr,
 	}
-
-	// Assuming n.isTerminal is correctly set elsewhere in node.go logic
-	n.childrenMtx.Lock() // Still need lock if isTerminal might be read/written concurrently
-	isTerminal := n.isTerminal
-	n.childrenMtx.Unlock()
-
-	return &nodeState{
-		Status: n.status,
-		Error:  errStr,
-		// Children field omitted
-		IsTerminal: isTerminal, // This value will now be included by toMap()
+	// Capture the *current* error state during execution/completion
+	if ne.err != nil {
+		state.Error = ne.err.Error()
 	}
+	// TODO: Add timing fields if needed
+	// if !ne.startedAt.IsZero() { state.StartedAtStr = ne.startedAt.Format(time.RFC3339Nano) }
+	// if !ne.completedAt.IsZero() { state.CompletedAtStr = ne.completedAt.Format(time.RFC3339Nano) }
+	return state
 }

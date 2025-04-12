@@ -1,4 +1,4 @@
-// ./examples/fanin/main.go
+// ./examples/fanin/example.go
 package main
 
 import (
@@ -22,9 +22,9 @@ type perspectives struct {
 }
 
 // threePerspectivesWorkflow demonstrates fan-in using heart.NewNode.
-// The function provided to NewNode now returns an heart.Output.
-// The overall workflow function also returns heart.Output.
-func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Output[perspectives] {
+// The function provided to NewNode now returns a Node[perspectives] blueprint.
+// The overall workflow function also returns Node[perspectives].
+func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Node[perspectives] {
 
 	// --- Branch 1: Optimistic Perspective ---
 	optimistRequest := goopenai.ChatCompletionRequest{
@@ -36,7 +36,7 @@ func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Output[
 		MaxTokens: 1024, Temperature: 0.8,
 	}
 	optimistNodeDef := openai.CreateChatCompletion(ctx, "optimist-view")
-	optimistNode := optimistNodeDef.Bind(heart.Into(optimistRequest)) // Returns Node
+	optimistNode := optimistNodeDef.Bind(heart.Into(optimistRequest)) // Returns Node[ChatCompletionResponse]
 
 	// --- Branch 2: Pessimistic Perspective ---
 	pessimistRequest := goopenai.ChatCompletionRequest{
@@ -48,44 +48,45 @@ func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Output[
 		MaxTokens: 1024, Temperature: 0.4,
 	}
 	pessimistNodeDef := openai.CreateChatCompletion(ctx, "pessimist-view")
-	pessimistNode := pessimistNodeDef.Bind(heart.Into(pessimistRequest)) // Returns Node
+	pessimistNode := pessimistNodeDef.Bind(heart.Into(pessimistRequest)) // Returns Node[ChatCompletionResponse]
 
 	// --- Synthesis Step using NewNode ---
-	// NewNode now returns Output[perspectives]
-	synthesisOutput := heart.NewNode(
-		ctx,                  // Use the original context to define this synthesis node
+	// This NewNode now wraps the fan-in logic AND the subsequent synthesis call.
+	// Its function returns the blueprint handle for the *final* node in its scope.
+	synthesisNode := heart.NewNode[perspectives]( // Returns Node[perspectives]
+		ctx,                  // Use the original workflow context to define this node
 		"generate-realistic", // Node ID for the synthesis step itself (Path: /generate-realistic)
-		// This function now returns an Output[perspectives]
-		func(synthesisCtx heart.Context) heart.Output[perspectives] {
-			fmt.Println("Synthesis node started, waiting for parallel branches sequentially...")
+		// This function now takes NewNodeContext and returns a Node blueprint handle
+		func(synthesisCtx heart.NewNodeContext) heart.Node[perspectives] {
+			fmt.Println("Synthesis node started, waiting for parallel branches via FanIn...")
 
-			// Block and wait for Optimist branch
+			// Use FanIn to wait for Optimist branch
 			fmt.Println("Waiting for Optimist branch...")
-			optResp, errOpt := optimistNode.Out() // Call Out on the Node handle
+			optResp, errOpt := heart.FanIn(synthesisCtx, optimistNode)
 			if errOpt != nil {
 				fmt.Printf("Optimist branch failed: %v\n", errOpt)
 			} else {
 				fmt.Println("Optimist branch completed.")
 			}
 
-			// Block and wait for Pessimist branch
+			// Use FanIn to wait for Pessimist branch
 			fmt.Println("Waiting for Pessimist branch...")
-			pessResp, errPess := pessimistNode.Out() // Call Out on the Node handle
+			pessResp, errPess := heart.FanIn[goopenai.ChatCompletionResponse](synthesisCtx, pessimistNode)
 			if errPess != nil {
 				fmt.Printf("Pessimist branch failed: %v\n", errPess)
 			} else {
 				fmt.Println("Pessimist branch completed.")
 			}
 
-			// Combine errors from parallel branches. If either failed, return an error Output.
+			// Combine errors from FanIn. If either failed, return an error blueprint.
 			fetchErrs := errors.Join(errOpt, errPess)
 			if fetchErrs != nil {
-				err := fmt.Errorf("error fetching parallel results: %w", fetchErrs)
-				// Return an Output containing the error
+				err := fmt.Errorf("error fetching parallel results via FanIn: %w", fetchErrs)
+				// Return a Node blueprint representing the error
 				return heart.IntoError[perspectives](err)
 			}
 
-			// --- Both branches succeeded, proceed with synthesis ---
+			// --- Both branches succeeded via FanIn, proceed with extraction ---
 
 			// Extract content
 			optimistText, errExtOpt := extractContent(optResp)
@@ -93,11 +94,11 @@ func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Output[
 			extractErrs := errors.Join(errExtOpt, errExtPess)
 			if extractErrs != nil {
 				err := fmt.Errorf("error extracting content from successful LLM calls: %w", extractErrs)
-				// Return an Output containing the error
+				// Return a Node blueprint representing the error
 				return heart.IntoError[perspectives](err)
 			}
 
-			fmt.Println("Parallel branches finished successfully, starting realistic synthesis...")
+			fmt.Println("Parallel branches finished successfully, defining realistic synthesis...")
 
 			// --- Define 3rd LLM Call (Realistic Synthesis) ---
 			realisticPrompt := fmt.Sprintf(
@@ -117,43 +118,57 @@ func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Output[
 				MaxTokens: 2048, Temperature: 0.6,
 			}
 
-			// Define node using the derived context `synthesisCtx`
-			realisticNodeDef := openai.CreateChatCompletion(synthesisCtx, "realistic-synthesis")
-			// Bind starts execution
-			realisticNode := realisticNodeDef.Bind(heart.Into(realisticRequest)) // Returns Node
+			// Define node using the derived context `synthesisCtx.Context`
+			// Use the standard Context embedded within NewNodeContext for DefineNode/Bind
+			realisticNodeDef := openai.CreateChatCompletion(synthesisCtx.Context, "realistic-synthesis")
+			// Bind starts execution blueprint definition
+			realisticNode := realisticNodeDef.Bind(heart.Into(realisticRequest)) // Returns Node[ChatCompletionResponse]
 
-			// Wait for the realistic synthesis call to complete by calling Out()
-			fmt.Println("Waiting for Realistic synthesis...")
-			realResp, errReal := realisticNode.Out() // Call Out on the Node handle
-			if errReal != nil {
-				fmt.Printf("Realistic synthesis failed: %v\n", errReal)
-				err := fmt.Errorf("realistic synthesis failed: %w", errReal)
-				// Return an Output containing the error
-				return heart.IntoError[perspectives](err)
-			}
-			fmt.Println("Realistic synthesis completed.")
+			// --- Define Final Assembly Node ---
+			// This nested NewNode waits for the realisticNode and assembles the final struct.
+			assemblyNode := heart.NewNode[perspectives](
+				synthesisCtx.Context,    // Define in the same parent context
+				"assemble-perspectives", // Node ID for the final assembly
+				func(assemblyCtx heart.NewNodeContext) heart.Node[perspectives] {
+					fmt.Println("Waiting for Realistic synthesis via FanIn...")
+					// Use FanIn to wait for the realistic synthesis call to complete
+					realResp, errReal := heart.FanIn(assemblyCtx, realisticNode)
+					if errReal != nil {
+						fmt.Printf("Realistic synthesis failed: %v\n", errReal)
+						err := fmt.Errorf("realistic synthesis failed: %w", errReal)
+						// Return an error blueprint
+						return heart.IntoError[perspectives](err)
+					}
+					fmt.Println("Realistic synthesis completed.")
 
-			realText, errExtReal := extractContent(realResp)
-			if errExtReal != nil {
-				err := fmt.Errorf("error extracting realistic content: %w", errExtReal)
-				// Return an Output containing the error
-				return heart.IntoError[perspectives](err)
-			}
+					realText, errExtReal := extractContent(realResp)
+					if errExtReal != nil {
+						err := fmt.Errorf("error extracting realistic content: %w", errExtReal)
+						// Return an error blueprint
+						return heart.IntoError[perspectives](err)
+					}
 
-			// Construct the final result
-			finalResult := perspectives{
-				Pessimistic: strings.TrimSpace(pessimistText),
-				Optimistic:  strings.TrimSpace(optimistText),
-				Realistic:   strings.TrimSpace(realText),
-			}
+					// Construct the final result
+					finalResult := perspectives{
+						Pessimistic: strings.TrimSpace(pessimistText),
+						Optimistic:  strings.TrimSpace(optimistText),
+						Realistic:   strings.TrimSpace(realText),
+					}
 
-			// Return an Output containing the final successful result
-			return heart.Into(finalResult)
+					// Return a Node blueprint containing the final successful result
+					return heart.Into(finalResult) // Into returns Node[perspectives]
+				},
+			) // End of assembly NewNode
 
-		}) // End of NewNode function
+			// The outer NewNode function returns the blueprint handle of the assemblyNode.
+			// The NewNode wrapper will resolve this blueprint when its result is needed.
+			return assemblyNode // Return Node[perspectives]
+		},
+	) // End of outer NewNode definition
 
-	// Return the Output from NewNode. Its Out() method will eventually provide the perspectives.
-	return synthesisOutput
+	// Return the blueprint handle from the outer NewNode.
+	// Its resolution will eventually provide the perspectives.
+	return synthesisNode // Return Node[perspectives]
 }
 
 // extractContent safely retrieves the message content from an OpenAI response.
@@ -171,8 +186,8 @@ func extractContent(resp goopenai.ChatCompletionResponse) (string, error) {
 	finishReason := resp.Choices[0].FinishReason
 	if finishReason == goopenai.FinishReasonStop || finishReason == goopenai.FinishReasonToolCalls {
 		if content == "" && finishReason == goopenai.FinishReasonStop {
-			errMsg := fmt.Sprintf("empty content received despite finish_reason 'stop' (Usage: %+v)", resp.Usage)
-			return "", errors.New(errMsg)
+			// Allow empty content if finish reason is stop
+			return "", nil
 		}
 		return content, nil // Valid content or empty content with tool_calls
 	}
@@ -183,6 +198,7 @@ func extractContent(resp goopenai.ChatCompletionResponse) (string, error) {
 	} else if finishReason == goopenai.FinishReasonLength {
 		errMsg = fmt.Sprintf("content generation stopped due to max_tokens limit (Usage: %+v)", resp.Usage)
 	}
+	// Return content even with error for length/filter cases, but signal the issue
 	return content, errors.New(errMsg)
 }
 
@@ -206,6 +222,7 @@ func main() {
 	}
 
 	// --- Workflow Definition ---
+	// DefineWorkflow now takes the handler returning Node[perspectives]
 	threePerspectiveWorkflowDef := heart.DefineWorkflow(threePerspectivesWorkflow, heart.WithStore(fileStore))
 
 	// --- Workflow Execution ---
@@ -216,10 +233,11 @@ func main() {
 	inputQuestion := "Should companies invest heavily in custom AGI research?"
 
 	// Execute a new instance of the workflow. New returns WorkflowOutput immediately.
+	// The type parameter remains perspectives as New wraps the final node's output.
 	resultHandle := threePerspectiveWorkflowDef.New(workflowCtx, inputQuestion) // Returns Output[perspectives]
 	fmt.Println("Workflow instance started...")
 
-	// Block until the final result (from the synthesis node created by NewNode) is ready.
+	// Block until the final result (from the assembly node inside NewNode) is ready.
 	perspectivesResult, err := resultHandle.Out() // Call Out() on the Output handle
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {

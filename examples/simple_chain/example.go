@@ -19,7 +19,7 @@ import (
 // 2. Generate an introductory paragraph based on the title.
 // It uses a direct .Out() call within the handler for data transformation.
 // It returns the final OpenAI API response containing the paragraph.
-func titleAndParagraphWorkflow_Simple(ctx heart.Context, topic string) heart.Output[goopenai.ChatCompletionResponse] {
+func titleAndParagraphWorkflow_Simple(ctx heart.Context, topic string) heart.Node[string, goopenai.ChatCompletionResponse] {
 	// This handler function defines the structure and dependencies of the workflow graph.
 
 	// --- Node 1: Title Generator ---

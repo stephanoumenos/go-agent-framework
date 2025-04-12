@@ -1,6 +1,8 @@
 // ./nodes/openai/middleware/tools.go
 package middleware
 
+/* Comment out for now. We will fix it soon. Needs fixing for new lazy style execution.
+
 import (
 	"context"
 	"encoding/json" // Needed for unmarshaling arguments in ExecuteMiddleware
@@ -271,17 +273,6 @@ func (r *toolsMiddlewareResolver) ExecuteMiddleware(ctx context.Context, origina
 	return finalResp, nil // Return the last response received, even if it might contain tool calls
 }
 
-// copyMessages creates a new slice and copies message content.
-// Important to avoid modifying the original request's message slice when appending history.
-func copyMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
-	if messages == nil {
-		return nil // Handle nil slice gracefully
-	}
-	newMessages := make([]openai.ChatCompletionMessage, len(messages))
-	copy(newMessages, messages)
-	return newMessages
-}
-
 // --- Middleware Constructor Function ---
 
 // WithTools defines a NodeDefinition that injects tool calling capabilities.
@@ -323,3 +314,5 @@ func WithTools(
 
 	return middlewareNodeDefinition
 }
+
+*/

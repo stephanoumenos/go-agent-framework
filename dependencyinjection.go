@@ -1,3 +1,4 @@
+// ./dependencyinjection.go
 package heart
 
 import (
@@ -13,16 +14,16 @@ import (
 // Leaving this as P1 as project is still in early phase.
 
 var (
-	dependencies     = make([]any, 0)
-	nodeDependencies = make(map[NodeTypeID]any)
-	dependenciesMtx  = sync.Mutex{}
-	// TODO: move to errors subpackage and export
+	dependencies            = make([]any, 0)
+	nodeDependencies        = make(map[NodeTypeID]any)
+	dependenciesMtx         = sync.Mutex{}
 	errDuplicateDependency  = errors.New("duplicate dependency")
 	errNoDependencyProvided = errors.New("no dependency provided")
 	errDependencyWrongType  = errors.New("dependency provided with wrong type")
 )
 
 // DependencyInjector is an interface for defining dependency constructors.
+// It remains unchanged as DI happens during blueprint definition.
 type DependencyInjector interface {
 	nodes() []NodeTypeID
 	construct() any
@@ -43,6 +44,7 @@ func (d dependencyInjector[Params, Dep]) construct() any {
 }
 
 // DependencyInjectable is an interface for node initializers that accept dependencies.
+// It remains unchanged.
 type DependencyInjectable[Dep any] interface {
 	NodeInitializer
 	DependencyInject(Dep)
@@ -50,6 +52,7 @@ type DependencyInjectable[Dep any] interface {
 
 // NodesDependencyInject creates a DependencyInjector for a specific dependency type
 // and associates it with the provided node initializers.
+// It remains unchanged.
 func NodesDependencyInject[Params, Dep any](params Params, new func(Params) Dep, nodes ...DependencyInjectable[Dep]) DependencyInjector {
 	d := dependencyInjector[Params, Dep]{params: params, new: new}
 	d._nodes = make([]NodeTypeID, 0, len(nodes))
@@ -61,6 +64,7 @@ func NodesDependencyInject[Params, Dep any](params Params, new func(Params) Dep,
 }
 
 // Dependencies registers and constructs dependencies defined by DependencyInjectors.
+// It remains unchanged.
 func Dependencies(constructors ...DependencyInjector) error {
 	// TODO: Make concurrent
 	for _, c := range constructors {
@@ -71,28 +75,37 @@ func Dependencies(constructors ...DependencyInjector) error {
 	return nil
 }
 
+// storeDependency stores a dependency and associates it with node types.
 func storeDependency(dep any, ids ...NodeTypeID) error {
 	dependenciesMtx.Lock()
 	defer dependenciesMtx.Unlock()
-	dependencies = append(dependencies, dep)
-	for i, node := range ids {
-		if _, ok := nodeDependencies[node]; ok {
-			// Clean up what we changed first
-			dependencies = dependencies[:len(dependencies)-1] // Pop last element to restore initial state
-			for range i {
-				delete(nodeDependencies, node)
-			}
-			return fmt.Errorf("dependency already declared for node %q: %w", node, errDuplicateDependency)
+
+	// Check for duplicates before adding
+	// newDepType := reflect.TypeOf(dep) // <<< REMOVED UNUSED VARIABLE
+	for _, nodeID := range ids {
+		if existingDep, ok := nodeDependencies[nodeID]; ok {
+			// The error message uses existingDep and dep directly with %T.
+			return fmt.Errorf("dependency already declared for node %q (existing type: %T, new type: %T): %w", nodeID, existingDep, dep, errDuplicateDependency)
 		}
-		nodeDependencies[node] = dependencies[len(dependencies)-1]
 	}
+	// 'newDepType' was not used.
+
+	// Add the dependency once
+	dependencies = append(dependencies, dep)
+	// Get the index *after* appending
+	depIndex := len(dependencies) - 1 // Index of the dependency we just added
+
+	// Map node IDs to the dependency value itself
+	for _, nodeID := range ids {
+		// Use the dependency value directly from the slice at the correct index
+		nodeDependencies[nodeID] = dependencies[depIndex]
+	}
+
 	return nil
 }
 
+// getNodeDependency remains unchanged.
 func getNodeDependency(id NodeTypeID) (nodeDep any, ok bool) {
-	// First we check if nodeType implements the dependency injection method
-	// Sadly we gotta use reflection here (TODO: find better way if Go allows it)
-	// t := reflect.TypeOf(nodeType)
 	dependenciesMtx.Lock()
 	defer dependenciesMtx.Unlock()
 	dep, ok := nodeDependencies[id]
@@ -102,17 +115,19 @@ func getNodeDependency(id NodeTypeID) (nodeDep any, ok bool) {
 	return dep, true
 }
 
-func dependencyInject(node any, id NodeTypeID) error {
-	userNode := reflect.ValueOf(node)
-	method := userNode.MethodByName("DependencyInject")
+// dependencyInject remains unchanged. It operates on the initializer provided by the resolver.
+func dependencyInject(nodeInitializer any, id NodeTypeID) error {
+	// Check if the initializer itself implements DependencyInject
+	method := reflect.ValueOf(nodeInitializer).MethodByName("DependencyInject")
 	if !method.IsValid() {
-		// Node doesn't implement the injection interface, which is fine.
+		// Node's initializer doesn't implement the injection interface, which is fine.
 		return nil
 	}
 
 	methodType := method.Type()
 	if methodType.NumIn() != 1 || methodType.NumOut() != 0 {
 		// TODO: Maybe emit warn here for incorrect signature?
+		fmt.Printf("WARN: DependencyInject method for node type %q has incorrect signature: %s\n", id, methodType)
 		return nil
 	}
 
@@ -124,11 +139,10 @@ func dependencyInject(node any, id NodeTypeID) error {
 	}
 
 	depVal := reflect.ValueOf(dep)
-
 	expectedParamType := methodType.In(0)
 
 	if !depVal.Type().AssignableTo(expectedParamType) {
-		return fmt.Errorf("dependency with wrong type provided for node type: %q: expected %s, got %s: %w", id, expectedParamType, depVal.Type(), errDependencyWrongType)
+		return fmt.Errorf("dependency with wrong type provided for node type %q: expected %s, got %s: %w", id, expectedParamType, depVal.Type(), errDependencyWrongType)
 	}
 
 	method.Call([]reflect.Value{depVal})

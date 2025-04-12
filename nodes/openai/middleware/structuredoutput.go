@@ -2,16 +2,28 @@
 package middleware
 
 import (
-	"context" // Keep standard context
-	"encoding/json"
-	"errors"
-	"fmt"
-	"heart" // Use heart types
+	"heart"
 
 	"github.com/sashabaranov/go-openai"
-	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
+// Keep standard context
+
+// Use heart types
+
+// WithStructuredOutput defines a NodeDefinition that wraps another ChatCompletion node
+// to enforce structured JSON output matching the SOut type.
+func WithStructuredOutput[SOut any](
+	ctx heart.Context, // Context to define the node within (provides BasePath)
+	nodeID heart.NodeID, // Local ID for this middleware node instance
+	next heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse], // The node definition this middleware wraps
+) heart.NodeDefinition[openai.ChatCompletionRequest, SOut] {
+	// TODO: We need to fix this for the new lazy style of execution.
+	return nil
+
+}
+
+/*
 // genericNodeInitializer remains useful
 type genericNodeInitializer struct {
 	id heart.NodeTypeID
@@ -149,3 +161,4 @@ func WithStructuredOutput[SOut any](
 
 	return middlewareNodeDefinition
 }
+*/
