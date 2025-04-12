@@ -166,9 +166,6 @@ func (s *fileStore) initialize() error {
 			}
 		}
 	}
-	if foundGraphs > 0 {
-		s.options.Logger.Warn("Initialized file store, found %d existing graphs in '%s'.", foundGraphs, s.rootDir)
-	}
 	return nil
 }
 

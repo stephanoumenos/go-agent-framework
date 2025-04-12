@@ -1,4 +1,4 @@
-// ./examples/if_llm_condition/main.go
+// ./examples/if/example.go
 package main
 
 import (
@@ -18,10 +18,9 @@ import (
 // conditionalWorkflowLLMCondition demonstrates using heart.If where the condition is determined by an LLM.
 // It selects an LLM response based on sentiment and then extracts the string content.
 // Returns heart.Output[string] representing the final extracted statement.
-func conditionalWorkflowLLMCondition(ctx heart.Context, topic string) heart.Output[string] { // Final return type is still string
+func conditionalWorkflowLLMCondition(ctx heart.Context, topic string) heart.Output[string] { // Final return type is string
 
 	// --- 1. LLM Node for Sentiment Analysis ---
-	// (Same as before)
 	sentimentRequest := goopenai.ChatCompletionRequest{
 		Model: goopenai.GPT4oMini,
 		Messages: []goopenai.ChatCompletionMessage{
@@ -31,48 +30,61 @@ func conditionalWorkflowLLMCondition(ctx heart.Context, topic string) heart.Outp
 		MaxTokens: 5, Temperature: 0.1,
 	}
 	sentimentNodeDef := openai.CreateChatCompletion(ctx, "sentiment_check_llm")
-	sentimentNode := sentimentNodeDef.Bind(heart.Into(sentimentRequest))
+	sentimentNode := sentimentNodeDef.Bind(heart.Into(sentimentRequest)) // Node[ChatCompletionResponse]
 
-	// --- 2. Condition Node (Parsing LLM Output) ---
-	// (Same as before)
-	conditionOutput := heart.NewNode(
+	// --- 2. Condition Node (Parsing LLM Output using NewNode + FanIn) ---
+	// This node *waits* for the sentiment LLM and parses its output into a boolean.
+	conditionOutput := heart.NewNode( // Returns Node[bool]
 		ctx, "parse_sentiment",
-		func(parseCtx heart.Context) heart.Output[bool] {
-			fmt.Printf("Waiting for sentiment LLM analysis of topic: \"%s\"...\n", topic)
-			sentimentResponse, err := sentimentNode.Out()
+		func(parseCtx heart.NewNodeContext) heart.Node[bool] { // Function returns Node[bool]
+			fmt.Printf("Parse Sentiment Node: Initiating FanIn for sentiment LLM analysis of topic: \"%s\"...\n", topic)
+
+			// Use FanIn to get the future result of the sentiment analysis.
+			sentimentFuture := heart.FanIn(parseCtx, sentimentNode) // Returns Future[ChatCompletionResponse]
+
+			// Wait for the sentiment analysis to complete.
+			fmt.Println("Parse Sentiment Node: Waiting for sentiment LLM result via Future.Get()...")
+			sentimentResponse, err := sentimentFuture.Get() // *** BLOCKS HERE ***
 			if err != nil {
+				fmt.Printf("Parse Sentiment Node: Sentiment LLM call failed: %v\n", err)
+				// Return an error blueprint for the boolean result
 				return heart.IntoError[bool](fmt.Errorf("sentiment LLM call failed: %w", err))
 			}
-			llmTextResult, err := extractContent(sentimentResponse) // Use existing helper
+			fmt.Println("Parse Sentiment Node: Sentiment LLM result received.")
+
+			// Extract the text content from the response.
+			llmTextResult, err := extractContent(sentimentResponse)
 			if err != nil {
-				// If content extraction failed even from the sentiment check, handle it
-				// Check if content is simply empty vs other errors
-				if llmTextResult == "" && err.Error() == "no choices returned from LLM" || strings.Contains(err.Error(), "empty content received") {
+				// Handle extraction failure
+				if llmTextResult == "" && (errors.Is(err, errNoChoices) || strings.Contains(err.Error(), "empty content")) { // Assuming errNoChoices exists or check string
 					fmt.Printf("Sentiment LLM returned no text content for '%s'. Defaulting sentiment to NEGATIVE.\n", topic)
 					return heart.Into(false) // Default to false if LLM gives no text
 				}
-				// For other extraction errors (content filter, length etc.)
+				// For other extraction errors
+				fmt.Printf("Parse Sentiment Node: Failed to extract sentiment content: %v\n", err)
 				return heart.IntoError[bool](fmt.Errorf("failed to extract sentiment LLM content: %w", err))
 			}
+
+			// Parse the result into a boolean.
 			trimmedResult := strings.TrimSpace(strings.ToUpper(llmTextResult))
 			fmt.Printf("Sentiment LLM Result for '%s': '%s'\n", topic, trimmedResult)
 			isPositive := (trimmedResult == "POSITIVE")
+
+			// Return a blueprint containing the boolean result.
 			return heart.Into(isPositive)
 		},
-	)
+	) // End of conditionOutput NewNode definition
 
 	// --- 3. heart.If Construct ---
-	// If now selects which *Response Output* to forward.
-	// The type parameter is changed to goopenai.ChatCompletionResponse.
-	selectedResponseOutput := heart.If(
+	// The heart.If implementation *internally* handles waiting for the conditionOutput node.
+	// It uses FanIn internally and calls Get() on the condition's Future.
+	selectedResponseOutput := heart.If( // Returns Node[ChatCompletionResponse]
 		ctx,                // Use the root context to define the If wrapper
 		"sentiment_branch", // Node ID for the If wrapper
-		conditionOutput,    // The Output[bool] from the parsing node
-
-		// --- ifTrue Function ---
-		// Now returns Output[goopenai.ChatCompletionResponse]
-		func(trueCtx heart.Context) heart.Output[goopenai.ChatCompletionResponse] {
-			fmt.Println("LLM perceived POSITIVE sentiment. Executing TRUE branch...")
+		conditionOutput,    // Pass the Node[bool] blueprint handle
+		// --- ifTrue Function (defines the blueprint for the true branch) ---
+		func(trueCtx heart.Context) heart.Node[goopenai.ChatCompletionResponse] {
+			fmt.Println("Conditional Branch: LLM perceived POSITIVE sentiment. Defining TRUE branch...")
 			positiveRequest := goopenai.ChatCompletionRequest{
 				Model: goopenai.GPT4oMini,
 				Messages: []goopenai.ChatCompletionMessage{
@@ -82,14 +94,11 @@ func conditionalWorkflowLLMCondition(ctx heart.Context, topic string) heart.Outp
 			}
 			positiveNodeDef := openai.CreateChatCompletion(trueCtx, "optimistic_statement")
 			positiveNode := positiveNodeDef.Bind(heart.Into(positiveRequest))
-			// Return the Node handle directly, as Node implements Output[Response]
-			return positiveNode // CHANGED RETURNED VALUE
+			return positiveNode // Return the Node blueprint handle
 		},
-
-		// --- _else Function ---
-		// Now returns Output[goopenai.ChatCompletionResponse]
-		func(falseCtx heart.Context) heart.Output[goopenai.ChatCompletionResponse] {
-			fmt.Println("LLM perceived NEGATIVE/NEUTRAL sentiment. Executing FALSE branch...")
+		// --- _else Function (defines the blueprint for the false branch) ---
+		func(falseCtx heart.Context) heart.Node[goopenai.ChatCompletionResponse] {
+			fmt.Println("Conditional Branch: LLM perceived NEGATIVE/NEUTRAL sentiment. Defining FALSE branch...")
 			cautionaryRequest := goopenai.ChatCompletionRequest{
 				Model: goopenai.GPT4oMini,
 				Messages: []goopenai.ChatCompletionMessage{
@@ -99,35 +108,38 @@ func conditionalWorkflowLLMCondition(ctx heart.Context, topic string) heart.Outp
 			}
 			cautionaryNodeDef := openai.CreateChatCompletion(falseCtx, "cautionary_statement")
 			cautionaryNode := cautionaryNodeDef.Bind(heart.Into(cautionaryRequest))
-			// Return the Node handle directly
-			return cautionaryNode // CHANGED RETURNED VALUE
+			return cautionaryNode // Return the Node blueprint handle
 		},
 	)
 
 	// --- 4. Final Extraction Node ---
-	// This node is defined *after* the If. It takes the Output from the If
-	// (which is the Output of the chosen LLM call) and extracts the string.
-	finalStatementOutput := heart.NewNode(
+	// This node waits for the result of the `If` construct (which is the selected response blueprint).
+	finalStatementOutput := heart.NewNode( // Returns Node[string]
 		ctx,                       // Defined in the root context
-		"extract_final_statement", // Node ID (e.g., path /extract_final_statement)
-		func(extractCtx heart.Context) heart.Output[string] {
-			fmt.Println("Waiting for selected LLM response...")
-			// Block and wait for the output from the If construct (selected response)
-			responseFromIf, err := selectedResponseOutput.Out() // Gets the ChatCompletionResponse
+		"extract_final_statement", // Node ID
+		func(extractCtx heart.NewNodeContext) heart.Node[string] { // Returns Node[string]
+			fmt.Println("Extract Final Node: Initiating FanIn for selected LLM response...")
+			// Get the Future for the response selected by the If construct.
+			selectedResponseFuture := heart.FanIn(extractCtx, selectedResponseOutput) // Future[ChatCompletionResponse]
+
+			// Wait for the selected response to complete.
+			fmt.Println("Extract Final Node: Waiting for selected LLM response via Future.Get()...")
+			responseFromIf, err := selectedResponseFuture.Get() // *** BLOCKS HERE ***
 			if err != nil {
-				// If the selected branch itself failed
+				fmt.Printf("Extract Final Node: Error receiving response from selected branch: %v\n", err)
 				return heart.IntoError[string](fmt.Errorf("error receiving response from selected sentiment branch: %w", err))
 			}
+			fmt.Println("Extract Final Node: Selected response received.")
 
+			// Extract the string content.
 			fmt.Println("Extracting final content...")
-			// Extract the string content using the same helper function
 			content, err := extractContent(responseFromIf)
 			if err != nil {
-				// If extraction fails even from the selected response
+				fmt.Printf("Extract Final Node: Failed to extract final content: %v\n", err)
 				return heart.IntoError[string](fmt.Errorf("failed to extract final content: %w", err))
 			}
 
-			// Return the final extracted string
+			// Return the final extracted string blueprint.
 			return heart.Into(content)
 		},
 	)
@@ -136,23 +148,29 @@ func conditionalWorkflowLLMCondition(ctx heart.Context, topic string) heart.Outp
 	return finalStatementOutput
 }
 
-// extractContent (same as before) safely retrieves message content.
+// Define a package-level error for clarity in extractContent
+var errNoChoices = errors.New("no choices returned from LLM")
+
+// extractContent (modified slightly to use errNoChoices)
 func extractContent(resp goopenai.ChatCompletionResponse) (string, error) {
 	if len(resp.Choices) == 0 {
-		errMsg := "no choices returned from LLM"
-		return "", errors.New(errMsg)
+		errMsg := errNoChoices.Error() // Use the defined error
+		if resp.Usage.TotalTokens > 0 {
+			errMsg = fmt.Sprintf("%s (Usage: %+v)", errMsg, resp.Usage)
+			return "", fmt.Errorf(errMsg) // Return formatted error
+		}
+		return "", errNoChoices // Return base error
 	}
 	message := resp.Choices[0].Message
 	content := message.Content
 	finishReason := resp.Choices[0].FinishReason
 	if finishReason == goopenai.FinishReasonStop || finishReason == goopenai.FinishReasonToolCalls {
 		if content == "" && finishReason == goopenai.FinishReasonStop {
-			// Return empty string and nil error if content is legitimately empty
-			return "", nil
+			return "", nil // Allow empty content if stopped normally
 		}
 		return content, nil
 	}
-	// Handle unexpected finish reasons, return potentially partial content and an error
+	// Handle unexpected finish reasons
 	errMsg := fmt.Sprintf("LLM generation finished unexpectedly (Reason: %s)", finishReason)
 	if finishReason == goopenai.FinishReasonContentFilter {
 		errMsg = "LLM content generation stopped due to content filter"
@@ -163,22 +181,21 @@ func extractContent(resp goopenai.ChatCompletionResponse) (string, error) {
 }
 
 func main() {
-	fmt.Println("Starting heart.If Example with LLM Condition (Refactored Extraction)...")
+	fmt.Println("Starting heart.If Example with LLM Condition (Refactored Extraction & Futures)...")
 
 	// --- Standard Setup ---
 	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" { /* ... error handling ... */
+	if apiKey == "" {
 		fmt.Fprintln(os.Stderr, "Error: OPENAI_API_KEY environment variable not set.")
 		os.Exit(1)
 	}
-
 	client := goopenai.NewClient(apiKey)
-	if err := heart.Dependencies(openai.Inject(client)); err != nil { /* ... error handling ... */
+	if err := heart.Dependencies(openai.Inject(client)); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up dependencies: %v\n", err)
 		os.Exit(1)
 	}
 	fileStore, err := store.NewFileStore("workflows")
-	if err != nil { /* ... error handling ... */
+	if err != nil {
 		fmt.Printf("Error creating file store: %v\n", err)
 		os.Exit(1)
 	}
@@ -207,6 +224,7 @@ func main() {
 	// ---- Test Case 2: Likely Negative/Complex Sentiment ----
 	inputTopic2 := "Rising concerns about misinformation online"
 	fmt.Printf("\n--- Running Workflow (Test 2): Topic: \"%s\" ---\n", inputTopic2)
+	// Use a separate context if needed, or reuse if appropriate for the test
 	resultHandle2 := conditionalWorkflowDef.New(workflowCtx, inputTopic2)
 	fmt.Println("Workflow instance 2 started...")
 	finalStatement2, err2 := resultHandle2.Out()

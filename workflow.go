@@ -46,7 +46,6 @@ func (w WorkflowDefinition[In, Out]) New(parentCtx context.Context, in In) Outpu
 		cancel()
 		return result
 	}
-	fmt.Printf("INFO: Workflow %s graph created in store.\n", workflowUUID)
 
 	// Create the root workflow context with the execution registry.
 	workflowCtx := Context{ /* ... */ ctx: execCtx, nodeCount: &atomic.Int64{}, store: w.store, uuid: workflowUUID, registry: newExecutionRegistry(), BasePath: "/", cancel: cancel}
@@ -59,24 +58,19 @@ func (w WorkflowDefinition[In, Out]) New(parentCtx context.Context, in In) Outpu
 		defer func() {
 			if r := recover(); r != nil {
 				panicErr := fmt.Errorf("panic recovered during workflow execution %s: %v", workflowUUID, r)
-				fmt.Printf("CRITICAL: %v\n", panicErr)
 				result.err = panicErr
 				result.value = *new(Out) // Ensure zero value on panic
 			}
 		}()
 
-		fmt.Printf("INFO: Workflow %s handler starting...\n", workflowUUID)
 		finalNodeBlueprint := w.handler(workflowCtx, in) // Returns Node[Out]
 
 		if finalNodeBlueprint == nil { /* ... */
 			result.err = fmt.Errorf("workflow handler returned a nil final node blueprint handle (workflow: %s)", workflowUUID)
-			fmt.Printf("ERROR: %v\n", result.err)
 			return
 		}
-		fmt.Printf("INFO: Workflow %s handler returned final blueprint: %s\n", workflowUUID, finalNodeBlueprint.internal_getPath())
 
 		// Trigger resolution of the final blueprint using the registry.
-		fmt.Printf("INFO: Workflow %s resolving final blueprint...\n", workflowUUID)
 		// internalResolve now correctly returns the specific Out type or an error.
 		finalValue, execErr := internalResolve[Out](workflowCtx, finalNodeBlueprint)
 
@@ -85,16 +79,13 @@ func (w WorkflowDefinition[In, Out]) New(parentCtx context.Context, in In) Outpu
 		if execErr == nil {
 			// Resolution successful, finalValue is already the correct type Out.
 			result.value = finalValue
-			fmt.Printf("INFO: Workflow %s final result resolved successfully.\n", workflowUUID)
 		} else {
-			fmt.Printf("ERROR: Workflow %s final resolution failed: %v\n", workflowUUID, execErr)
 			// Ensure result.value is the zero value if there was an error
 			result.value = *new(Out)
 		}
 
 		// Check for context cancellation after resolution but before signalling done.
 		if execCtx.Err() != nil && result.err == nil {
-			fmt.Printf("WARN: Workflow %s context cancelled after resolution but before completion signal (%v).\n", workflowUUID, execCtx.Err())
 			result.err = execCtx.Err() // Report context error if no primary execution error occurred
 		}
 

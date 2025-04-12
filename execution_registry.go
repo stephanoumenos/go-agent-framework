@@ -55,7 +55,6 @@ func getOrCreateExecution[Out any](r *executionRegistry, nodeBlueprint Node[Out]
 	execInstance, exists := r.executions[nodePath]
 	if !exists {
 		// --- Create New Execution Instance ---
-		fmt.Printf("Registry: Creating new execution instance for path: %s\n", nodePath)
 		// Get definition and input source (still as 'any' as these are retrieved
 		// via the OutputBlueprint interface methods which hide specific types).
 		defAny := nodeBlueprint.internal_getDefinition()
@@ -80,8 +79,6 @@ func getOrCreateExecution[Out any](r *executionRegistry, nodeBlueprint Node[Out]
 		r.executions[nodePath] = newExec
 		execInstance = newExec
 		// --- End Create New Execution Instance ---
-	} else {
-		// fmt.Printf("Registry: Reusing existing execution instance for path: %s\n", nodePath)
 	}
 
 	// Return the existing or newly created executioner instance.
