@@ -1,11 +1,12 @@
+// ./examples/fanin/example_e2e_test.go
 //go:build e2e
 
 package main
 
 import (
 	"context"
-	"errors" // Import errors for checking
-	"heart"  // Use WorkflowResultHandle etc.
+	"errors"
+	"heart" // Use Execute etc.
 	"heart/nodes/openai"
 	"heart/store"
 	"os"
@@ -24,17 +25,29 @@ func TestThreePerspectivesWorkflowE2E(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("Skipping E2E test: OPENAI_API_KEY environment variable not set.")
 	}
-	t.Parallel()
+	// t.Parallel() // Running E2E in parallel might cause DI issues if not reset properly
+
+	// Add cleanup hook to reset DI state after test run
+	t.Cleanup(func() {
+		heart.ResetDependencies()
+	})
 
 	// 2. Setup REAL Client, Dependencies & Store
 	realClient := goopenai.NewClient(apiKey)
+	// NOTE: DI is global. Ensure clean state if running multiple E2E tests.
+	// Consider a DI reset mechanism or running E2E tests sequentially.
 	err := heart.Dependencies(openai.Inject(realClient))
+	// Use require.NoError here for cleaner setup failure reporting
 	require.NoError(t, err, "Failed to inject real dependencies")
-	memStore := store.NewMemoryStore()
 
-	// 3. Define Workflow
-	// DefineWorkflow returns WorkflowDefinition
-	threePerspectiveWorkflowDef := heart.DefineWorkflow(threePerspectivesWorkflow, heart.WithStore(memStore))
+	memStore := store.NewMemoryStore() // Store per test is fine
+
+	// 3. Define Workflow using DefineNode
+	workflowResolver := heart.NewWorkflowResolver("threePerspectivesE2E", threePerspectivesWorkflowHandler)
+	threePerspectiveWorkflowDef := heart.DefineNode[string, perspectives](
+		"threePerspectivesE2E",
+		workflowResolver,
+	)
 
 	// 4. Prepare Input
 	inputQuestion := "Should companies invest heavily in custom AGI research?"
@@ -42,12 +55,12 @@ func TestThreePerspectivesWorkflowE2E(t *testing.T) {
 	// 5. Execute Workflow - Use a longer timeout for real API calls
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second) // Longer timeout
 	defer cancel()
-	// New returns WorkflowResultHandle
-	resultHandle := threePerspectiveWorkflowDef.New(ctx, inputQuestion)
 
-	// 6. Get Result & Assert
-	// Use Out(ctx) on the WorkflowResultHandle
-	perspectivesResult, err := resultHandle.Out(ctx) // Pass context
+	// Start lazily
+	resultHandle := threePerspectiveWorkflowDef.Start(heart.Into(inputQuestion))
+
+	// Execute and wait
+	perspectivesResult, err := heart.Execute(ctx, resultHandle, heart.WithStore(memStore)) // Pass store to Execute
 
 	// 7. Assertions
 	// Check for specific context errors first

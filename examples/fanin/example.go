@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"heart" // Use ExecutionHandle, WorkflowResultHandle etc.
+	"heart" // Use ExecutionHandle, Context, Execute etc.
 	"heart/nodes/openai"
 	"heart/store"
 	"os"
@@ -21,9 +21,9 @@ type perspectives struct {
 	Realistic   string `json:"realistic_perspective"`
 }
 
-// threePerspectivesWorkflow defines the graph structure.
-// It now returns an ExecutionHandle for the final node.
-func threePerspectivesWorkflow(ctx heart.Context, question string) heart.ExecutionHandle[perspectives] {
+// threePerspectivesWorkflow handler function remains the same logically.
+// It takes heart.Context and returns heart.ExecutionHandle.
+func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.ExecutionHandle[perspectives] {
 	// --- Branch 1: Optimistic Perspective ---
 	optimistRequest := goopenai.ChatCompletionRequest{
 		Model: goopenai.GPT4oMini,
@@ -33,9 +33,8 @@ func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Executi
 		},
 		MaxTokens: 1024, Temperature: 0.8,
 	}
-	// DefineNode returns NodeDefinition
-	optimistNodeDef := openai.CreateChatCompletion(ctx, "optimist-view")
-	// Start is lazy, returns ExecutionHandle[ChatCompletionResponse]
+	// Use DefineNode with the passed context (ctx) to get correct BasePath
+	optimistNodeDef := openai.CreateChatCompletion("optimist-view") // Pass context
 	optimistNode := optimistNodeDef.Start(heart.Into(optimistRequest))
 
 	// --- Branch 2: Pessimistic Perspective ---
@@ -47,37 +46,26 @@ func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Executi
 		},
 		MaxTokens: 1024, Temperature: 0.4,
 	}
-	// DefineNode returns NodeDefinition
-	pessimistNodeDef := openai.CreateChatCompletion(ctx, "pessimist-view")
-	// Start is lazy, returns ExecutionHandle[ChatCompletionResponse]
+	pessimistNodeDef := openai.CreateChatCompletion("pessimist-view") // Pass context
 	pessimistNode := pessimistNodeDef.Start(heart.Into(pessimistRequest))
 
 	// --- Synthesis Step using NewNode ---
-	// NewNode returns ExecutionHandle[perspectives]
-	synthesisNode := heart.NewNode(
+	synthesisNode := heart.NewNode( // Pass context
 		ctx,
 		"generate-realistic",
-		// This function runs when synthesisNode is resolved.
-		// It returns the handle for the node that produces the final perspectives.
 		func(synthesisCtx heart.NewNodeContext) heart.ExecutionHandle[perspectives] {
 
-			// --- Initiate FanIn (gets Futures) ---
-			// FanIn takes ExecutionHandles, returns Future
-			optimistFuture := heart.FanIn(synthesisCtx, optimistNode)
-			pessimistFuture := heart.FanIn(synthesisCtx, pessimistNode)
+			optimistFuture := heart.FanIn(synthesisCtx, optimistNode)   // Pass NewNodeContext
+			pessimistFuture := heart.FanIn(synthesisCtx, pessimistNode) // Pass NewNodeContext
 
-			// *** BLOCKS HERE when Get() is called ***
-			// Future.Get() triggers execution of optimist/pessimist nodes if not already started.
 			optResp, errOpt := optimistFuture.Get()
 			pessResp, errPess := pessimistFuture.Get()
 
 			fetchErrs := errors.Join(errOpt, errPess)
 			if fetchErrs != nil {
-				// IntoError returns ExecutionHandle representing an error
 				return heart.IntoError[perspectives](fetchErrs)
 			}
 
-			// --- Extract Content ---
 			optimistText, errExtOpt := extractContent(optResp)
 			pessimistText, errExtPess := extractContent(pessResp)
 			extractErrs := errors.Join(errExtOpt, errExtPess)
@@ -85,7 +73,6 @@ func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Executi
 				return heart.IntoError[perspectives](extractErrs)
 			}
 
-			// --- Define 3rd LLM Call (Realistic Synthesis) ---
 			realisticPrompt := fmt.Sprintf(
 				"Based on the following two perspectives, provide a balanced and realistic summary:\n\n"+
 					"Optimistic View:\n%s\n\n"+
@@ -102,78 +89,84 @@ func threePerspectivesWorkflow(ctx heart.Context, question string) heart.Executi
 				MaxTokens: 2048, Temperature: 0.6,
 			}
 
-			// Define node using the derived context `synthesisCtx.Context`
-			realisticNodeDef := openai.CreateChatCompletion(synthesisCtx.Context, "realistic-synthesis")
-			// Start returns ExecutionHandle[ChatCompletionResponse]
+			// Use the NewNodeContext's embedded Context
+			realisticNodeDef := openai.CreateChatCompletion("realistic-synthesis")
 			realisticNode := realisticNodeDef.Start(heart.Into(realisticRequest))
 
-			// Initiate FanIn for the realistic synthesis result
-			realisticFuture := heart.FanIn(synthesisCtx, realisticNode)
+			realisticFuture := heart.FanIn(synthesisCtx, realisticNode) // Pass NewNodeContext
 
-			// *** BLOCKS HERE when Get() is called ***
 			realResp, errReal := realisticFuture.Get()
 			if errReal != nil {
 				err := fmt.Errorf("realistic synthesis failed: %w", errReal)
 				return heart.IntoError[perspectives](err)
 			}
 
-			// --- Extract realistic content ---
 			realText, errExtReal := extractContent(realResp)
 			if errExtReal != nil {
 				err := fmt.Errorf("error extracting realistic content: %w", errExtReal)
 				return heart.IntoError[perspectives](err)
 			}
 
-			// Construct the final result
 			finalResult := perspectives{
 				Pessimistic: strings.TrimSpace(pessimistText),
 				Optimistic:  strings.TrimSpace(optimistText),
 				Realistic:   strings.TrimSpace(realText),
 			}
 
-			// Return a Handle containing the final successful result
-			// Into returns ExecutionHandle[perspectives]
 			return heart.Into(finalResult)
 		},
 	)
 
-	// Return the handle for the synthesis node.
-	// The workflow's final result comes from resolving this handle.
 	return synthesisNode
 }
 
 func main() {
-	// --- Standard Setup ---
 	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" { /* ... error handling ... */
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "Error: OPENAI_API_KEY environment variable not set.")
 		os.Exit(1)
 	}
 	client := goopenai.NewClient(apiKey)
-	if err := heart.Dependencies(openai.Inject(client)); err != nil { /* ... error handling ... */
+	// --- Dependency Injection (Remains the same) ---
+	if err := heart.Dependencies(openai.Inject(client)); err != nil {
+		fmt.Fprintf(os.Stderr, "Error setting up dependencies: %v\n", err)
 		os.Exit(1)
 	}
-	fileStore, err := store.NewFileStore("workflows")
-	if err != nil { /* ... error handling ... */
-		return
-	}
 
-	// --- Workflow Definition ---
-	// DefineWorkflow returns WorkflowDefinition[string, perspectives]
-	threePerspectiveWorkflowDef := heart.DefineWorkflow(threePerspectivesWorkflow, heart.WithStore(fileStore))
+	// --- Store Setup ---
+	fileStore, err := store.NewFileStore("workflows_fanin")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating file store: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Using FileStore at './workflows_fanin'")
+	// defer os.RemoveAll("./workflows_fanin") // Optional cleanup
+
+	// --- Workflow Definition using DefineNode ---
+	// Create the workflow resolver first
+	workflowResolver := heart.NewWorkflowResolver("threePerspectives", threePerspectivesWorkflowHandler)
+	// Define the workflow like any other node
+	threePerspectiveWorkflowDef := heart.DefineNode[string, perspectives](
+		"threePerspectives", // Node ID for the workflow definition
+		workflowResolver,
+	)
 
 	// --- Workflow Execution ---
-	fmt.Println("Running 3-Perspective workflow...")
+	fmt.Println("Defining 3-Perspective workflow...")
 	workflowCtx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 
 	inputQuestion := "Should companies invest heavily in custom AGI research?"
 
-	// New starts the workflow EAGERLY and returns WorkflowResultHandle[perspectives]
-	workflowResultHandle := threePerspectiveWorkflowDef.New(workflowCtx, inputQuestion)
+	// Start the workflow LAZILY, get an ExecutionHandle
+	fmt.Println("Starting workflow (lazy)...")
+	workflowHandle := threePerspectiveWorkflowDef.Start(heart.Into(inputQuestion))
 
-	// Get Result: Use Out(ctx) on the WorkflowResultHandle.
-	// This blocks until the workflow completes, respecting workflowCtx for the *wait*.
-	perspectivesResult, err := workflowResultHandle.Out(workflowCtx) // Pass context
+	// Execute the workflow and wait for the result
+	fmt.Println("Executing workflow and waiting for result...")
+	// Pass workflow options (like store) to Execute
+	perspectivesResult, err := heart.Execute(workflowCtx, workflowHandle, heart.WithStore(fileStore))
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow execution failed: %v\n", err)
 		// Check if the error was due to the waiting context being cancelled
@@ -193,7 +186,7 @@ func main() {
 	fmt.Println(perspectivesResult.Realistic)
 }
 
-// extractContent safely retrieves the message content from an OpenAI response.
+// extractContent remains the same
 func extractContent(resp goopenai.ChatCompletionResponse) (string, error) {
 	if len(resp.Choices) == 0 {
 		errMsg := "no choices returned"

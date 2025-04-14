@@ -2,12 +2,13 @@
 package main
 
 import (
-	"context"
+	"context" // Keep import
+	"errors"  // Import errors package
 	"fmt"
-	"heart" // Use ExecutionHandle, WorkflowResultHandle etc.
+	"heart" // Use ExecutionHandle, Execute etc.
 	"heart/nodes/openai"
 	"heart/store"
-	"strings" // <<< ADD THIS IMPORT
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- Mock OpenAI Client ---
+// --- Mock OpenAI Client (remains the same) ---
 type mockOpenAIClient struct {
 	responses                 map[string]goopenai.ChatCompletionResponse
 	errors                    map[string]error
@@ -25,50 +26,70 @@ type mockOpenAIClient struct {
 	CreateChatCompletionCalls []goopenai.ChatCompletionRequest
 }
 
-// CreateChatCompletion implementation (Corrected)
+// CreateChatCompletion implementation (remains the same logic)
 func (m *mockOpenAIClient) CreateChatCompletion(ctx context.Context, req goopenai.ChatCompletionRequest) (goopenai.ChatCompletionResponse, error) {
 	m.callsMtx.Lock()
 	m.CreateChatCompletionCalls = append(m.CreateChatCompletionCalls, req)
-	m.callsMtx.Unlock() // Unlock earlier is fine
+	m.callsMtx.Unlock()
 
-	key := "default" // Start with a default key, can be anything not in your maps
+	// Determine key based on system prompt content for routing mock responses
+	key := "default" // Default key if no specific system prompt matches
 	for _, msg := range req.Messages {
 		if msg.Role == goopenai.ChatMessageRoleSystem {
 			content := msg.Content
-			// --- FIX START ---
-			// Check the content of the system prompt to determine the key
+			// Match based on keywords in system prompts used in the workflow
 			if strings.Contains(content, "technology evangelist") {
 				key = "optimist"
+				break
 			} else if strings.Contains(content, "doom-and-gloom analyst") {
 				key = "pessimist"
+				break
 			} else if strings.Contains(content, "balanced, realistic synthesizer") {
 				key = "realistic"
+				break
 			}
-			// --- FIX END ---
-			break // Found the system message, no need to check further
 		}
 	}
 
-	// Check for specific error for the determined key
+	// Check context cancellation before returning mock response/error
+	if err := ctx.Err(); err != nil {
+		// Simulate context cancellation error if the test context is done
+		fmt.Printf("[Mock OpenAI Fanin Test] Context cancelled or deadline exceeded for key '%s'\n", key)
+		return goopenai.ChatCompletionResponse{}, err
+	}
+
+	// Return predefined error if exists for the key
 	if err, exists := m.errors[key]; exists && err != nil {
 		fmt.Printf("[Mock OpenAI Fanin Test] Returning error for key '%s'\n", key)
 		return goopenai.ChatCompletionResponse{}, err
 	}
-	// Check for specific response for the determined key
+	// Return predefined response if exists for the key
 	if resp, exists := m.responses[key]; exists {
 		fmt.Printf("[Mock OpenAI Fanin Test] Returning response for key '%s'\n", key)
 		return resp, nil
 	}
 
-	// If key is still "default" or not found in maps, return the default response
+	// Fallback to default response if no specific key matched or defined
 	fmt.Printf("[Mock OpenAI Fanin Test] No predefined response/error for key '%s'. Returning default.\n", key)
-	return goopenai.ChatCompletionResponse{Choices: []goopenai.ChatCompletionChoice{{Message: goopenai.ChatCompletionMessage{Content: "Mocked default"}, FinishReason: goopenai.FinishReasonStop}}}, nil
+	return goopenai.ChatCompletionResponse{
+		Choices: []goopenai.ChatCompletionChoice{
+			{
+				Message:      goopenai.ChatCompletionMessage{Content: "Mocked default response for " + key},
+				FinishReason: goopenai.FinishReasonStop,
+			},
+		},
+	}, nil
 }
 
 // --- Test Function ---
 
 func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	t.Parallel()
+
+	// Add cleanup hook to reset DI state after test run
+	t.Cleanup(func() {
+		heart.ResetDependencies()
+	})
 
 	// 1. Setup Mock Client
 	mockClient := &mockOpenAIClient{
@@ -81,14 +102,19 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	}
 
 	// 2. Setup Dependencies & Store
-	// Ensure DI state is clean if tests interfere globally. Consider sequential runs or a DI reset.
-	err := heart.Dependencies(openai.Inject(mockClient))
-	require.NoError(t, err, "Failed to inject mock dependencies")
+	// Ensure DI state is clean if tests interfere globally. DI is global.
+	err := heart.Dependencies(openai.Inject(mockClient))          // DI setup remains the same
+	require.NoError(t, err, "Failed to inject mock dependencies") // Use require for setup errors
 	memStore := store.NewMemoryStore()
 
-	// 3. Define Workflow
-	// DefineWorkflow returns WorkflowDefinition
-	threePerspectiveWorkflowDef := heart.DefineWorkflow(threePerspectivesWorkflow, heart.WithStore(memStore))
+	// 3. Define Workflow using DefineNode
+	// Create the workflow resolver
+	workflowResolver := heart.NewWorkflowResolver("threePerspectivesTest", threePerspectivesWorkflowHandler)
+	// Define the workflow node
+	threePerspectiveWorkflowDef := heart.DefineNode[string, perspectives](
+		"threePerspectivesTest", // Assign an ID to the workflow definition
+		workflowResolver,
+	)
 
 	// 4. Prepare Input
 	inputQuestion := "Should companies invest heavily in custom AGI research?"
@@ -96,15 +122,20 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	// 5. Execute Workflow
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// New returns WorkflowResultHandle
-	resultHandle := threePerspectiveWorkflowDef.New(ctx, inputQuestion)
 
-	// 6. Get Result & Assert
-	// Use Out(ctx) on the WorkflowResultHandle
-	perspectivesResult, err := resultHandle.Out(ctx) // Pass context
+	// Start the workflow LAZILY
+	resultHandle := threePerspectiveWorkflowDef.Start(heart.Into(inputQuestion))
+
+	// Execute the workflow and wait for the result
+	// Pass workflow options (like store) to Execute
+	perspectivesResult, err := heart.Execute(ctx, resultHandle, heart.WithStore(memStore))
 
 	// 7. Assertions
-	require.NoError(t, err, "Workflow execution failed")
+	// Check context error first
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatal("Test timed out waiting for workflow result")
+	}
+	require.NoError(t, err, "Workflow execution failed") // Use require for the main execution error check
 
 	// Lock before accessing shared state for assertion
 	mockClient.callsMtx.Lock()
@@ -114,11 +145,17 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	require.Len(t, mockClient.CreateChatCompletionCalls, 3, "Expected three calls to OpenAI mock")
 
 	// Check the content using the mock responses
-	assert.Contains(t, perspectivesResult.Optimistic, "Mocked positive", "Optimistic response mismatch")
-	assert.Contains(t, perspectivesResult.Pessimistic, "Mocked negative", "Pessimistic response mismatch")
-	assert.Contains(t, perspectivesResult.Realistic, "Mocked balanced", "Realistic response mismatch")
+	assert.Equal(t, "Mocked positive", perspectivesResult.Optimistic, "Optimistic response mismatch") // Use Equal for exact match
+	assert.Equal(t, "Mocked negative", perspectivesResult.Pessimistic, "Pessimistic response mismatch")
+	assert.Equal(t, "Mocked balanced", perspectivesResult.Realistic, "Realistic response mismatch")
 
-	// ... (rest of prompt verification assertions remain the same) ...
-	// You might want to add assertions here to check the prompts received by the mock,
-	// similar to how you do it in TestTitleAndParagraphWorkflow_Simple_Integration
+	// Optional: Verify prompts received by the mock if needed
+	// Example: Check system prompt of the first call (optimist)
+	require.GreaterOrEqual(t, len(mockClient.CreateChatCompletionCalls[0].Messages), 1, "Optimist call missing messages")
+	assert.Contains(t, mockClient.CreateChatCompletionCalls[0].Messages[0].Content, "technology evangelist", "Optimist system prompt mismatch")
+	// Example: Check user prompt of the first call (optimist)
+	require.GreaterOrEqual(t, len(mockClient.CreateChatCompletionCalls[0].Messages), 2, "Optimist call missing user message")
+	assert.Equal(t, inputQuestion, mockClient.CreateChatCompletionCalls[0].Messages[1].Content, "Optimist user prompt mismatch")
+
+	// Add similar checks for pessimist and realistic calls if desired
 }

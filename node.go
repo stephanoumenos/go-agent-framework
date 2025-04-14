@@ -2,15 +2,12 @@
 package heart
 
 import (
+	// "context" // No longer needed here
 	"context"
 	"fmt"
-	// Add errors if needed by helpers
-	// "errors"
-	// Add store if needed by helpers
-	// "heart/store"
 )
 
-// --- Node Definition (Atomic) ---
+// --- Node Definition (Atomic / Wrapper) ---
 
 // NodeResolver interface remains the same
 type NodeResolver[In, Out any] interface {
@@ -18,114 +15,165 @@ type NodeResolver[In, Out any] interface {
 	Get(ctx context.Context, in In) (Out, error)
 }
 
-// definition implements NodeDefinition for atomic nodes.
-// It provides the createExecution method required by the embedded ExecutionCreator.
+// definition implements NodeDefinition. It holds the configuration but does
+// not create the executioner itself directly. It implements definitionGetter.
 type definition[In, Out any] struct {
-	path        NodePath
-	nodeTypeID  NodeTypeID
-	initializer NodeInitializer
+	nodeID      NodeID // Store the ID assigned at definition time
 	resolver    NodeResolver[In, Out]
-	defCtx      Context // Context captured during DefineNode
-	initErr     error
+	nodeTypeID  NodeTypeID      // Determined during init/DI
+	initializer NodeInitializer // Determined during init/DI
+	initErr     error           // Stores error from DI phase
 }
 
 func (d *definition[In, Out]) heartDef() {}
 
-// Start creates the execution handle for an atomic node. LAZY.
+// Start creates the execution handle. LAZY.
+// It runs the initialization/DI phase for the resolver.
 func (d *definition[In, Out]) Start(inputSource ExecutionHandle[In]) ExecutionHandle[Out] {
-	d.initErr = d.init() // Run DI checks
+	// Run DI checks immediately on definition.Start - fail early if possible.
+	// Store the result (or error) in the definition itself.
+	d.initErr = d.performInitialization()
 	if d.initErr != nil {
-		fmt.Printf("WARN: Initialization failed during definition.Start for node %s: %v. Execution will fail.\n", d.path, d.initErr)
+		// Log or handle initialization errors appropriately. Execution will fail later.
+		fmt.Printf("WARN: Initialization/DI failed during definition.Start for node ID '%s': %v. Execution will fail.\n", d.nodeID, d.initErr)
 	}
-	n := &node[In, Out]{ // Create the handle
-		d:           d,
+
+	// Create the handle, passing the definition and input source.
+	n := &node[In, Out]{
+		d:           d, // Pass the concrete definition which implements definitionGetter
 		inputSource: inputSource,
+		// path is initially empty
 	}
 	return n
 }
 
-func (d *definition[In, Out]) internal_GetPath() NodePath { return d.path }
+// internal_GetNodeID returns the node's assigned ID.
+func (d *definition[In, Out]) internal_GetNodeID() NodeID { return d.nodeID }
 
-// createExecution creates the stateful nodeExecution instance. Called LAZILY by registry.
-// This method satisfies the embedded ExecutionCreator interface in NodeDefinition.
-func (d *definition[In, Out]) createExecution(inputSourceAny any, wfCtx Context) (executioner, error) {
+// --- Methods to implement definitionGetter used by execution_registry ---
+
+func (d *definition[In, Out]) internal_GetResolver() any                { return d.resolver }
+func (d *definition[In, Out]) internal_GetNodeTypeID() NodeTypeID       { return d.nodeTypeID }
+func (d *definition[In, Out]) internal_GetInitializer() NodeInitializer { return d.initializer }
+func (d *definition[In, Out]) internal_GetInitError() error             { return d.initErr }
+
+// internal_createNodeExecution creates the standard node execution instance.
+// This method is called by the registry via the definitionGetter interface.
+// It knows the concrete types In and Out.
+func (d *definition[In, Out]) internal_createNodeExecution(execPath NodePath, inputSourceAny any, wfCtx Context) (executioner, error) {
+	// Type assertion for inputSourceAny is needed here, where 'In' is known.
 	var inputHandle ExecutionHandle[In]
 	if inputSourceAny != nil {
 		var ok bool
 		inputHandle, ok = inputSourceAny.(ExecutionHandle[In])
 		if !ok {
-			return nil, fmt.Errorf("internal error: type assertion failed for input source handle in createExecution for node %s: expected ExecutionHandle, got %T", d.path, inputSourceAny)
+			// If this fails, it likely means internalResolve passed the wrong input handle type,
+			// or there's a mismatch between the handle created by Start and the one passed here.
+			// This indicates a programming error within the framework.
+			return nil, fmt.Errorf("internal error: type assertion failed for node input source handle for %s: expected ExecutionHandle[%T], got %T", execPath, *new(In), inputSourceAny)
 		}
 	}
-	// newExecution is defined in node_execution.go
-	ne := newExecution[In, Out](d, inputHandle, wfCtx)
+
+	// We know 'In' and 'Out' here. Call newExecution directly.
+	// We also have the typed resolver d.resolver.
+	ne := newExecution[In, Out](
+		inputHandle, // Correctly typed handle
+		wfCtx,
+		execPath,
+		d.nodeTypeID,  // From definition
+		d.initializer, // From definition
+		d.resolver,    // Correctly typed resolver
+	)
+	// newExecution itself doesn't return an error in its current signature
 	return ne, nil
 }
 
-// init performs DI (Unchanged)
-func (d *definition[In, Out]) init() error {
+// performInitialization runs the Init and DI steps. Called by Start.
+func (d *definition[In, Out]) performInitialization() error {
 	if d.resolver == nil {
-		return fmt.Errorf("internal error: node resolver is nil for node path %s", d.path)
+		return fmt.Errorf("internal error: node resolver is nil for node ID %s", d.nodeID)
 	}
+	// Use a temporary variable for the initializer from Init()
 	initer := d.resolver.Init()
 	if initer == nil {
-		return fmt.Errorf("NodeResolver.Init() returned nil for node path %s", d.path)
+		// Allow nil initializer if DI is not needed? Or enforce non-nil?
+		// Let's assume for now Init() MUST return a non-nil initializer if DI is possible,
+		// or a placeholder if not. Enforce non-nil for simplicity.
+		// If a node truly needs no init or DI, its Init() can return a simple struct.
+		return fmt.Errorf("NodeResolver.Init() returned nil for node ID %s", d.nodeID)
 	}
+	// Store the initializer instance
 	d.initializer = initer
-	typeID := d.initializer.ID()
+
+	// Use a temporary variable for the type ID
+	typeID := initer.ID()
 	if typeID == "" {
-		return fmt.Errorf("NodeInitializer.ID() returned empty NodeTypeID for node path %s", d.path)
+		// Allow empty NodeTypeID if DI is not needed? Let's enforce non-empty for now.
+		return fmt.Errorf("NodeInitializer.ID() returned empty NodeTypeID for node ID %s", d.nodeID)
 	}
+	// Store the type ID
 	d.nodeTypeID = typeID
+
 	// dependencyInject is defined in dependencyinjection.go
+	// Inject dependencies into the initializer instance held by the definition.
+	// dependencyInject checks internally if the initializer implements DependencyInjectable.
 	diErr := dependencyInject(d.initializer, d.nodeTypeID)
 	if diErr != nil {
-		return fmt.Errorf("dependency injection failed for node path %s (type %s): %w", d.path, d.nodeTypeID, diErr)
+		// Wrap the error with context about the node ID and type
+		return fmt.Errorf("dependency injection failed for node ID %s (type %s): %w", d.nodeID, d.nodeTypeID, diErr)
 	}
+	// Initialization successful
 	return nil
 }
 
-// --- Node Handle (Atomic) ---
+// --- Node Handle (Atomic / Wrapper) ---
 
-// node implements ExecutionHandle for atomic nodes.
-// It does NOT expose public Out/Done methods.
+// node implements ExecutionHandle for nodes defined via DefineNode.
 type node[In, Out any] struct {
+	// Use definitionGetter interface to access definition details polymorphically
+	// Store the concrete *definition[In, Out] which implements definitionGetter.
 	d           *definition[In, Out]
-	inputSource ExecutionHandle[In] // Handle for the input node
+	inputSource ExecutionHandle[In]
+	path        NodePath // Path assigned at runtime by internalResolve
 }
 
 func (n *node[In, Out]) zero(Out)     {}
 func (n *node[In, Out]) heartHandle() {}
 func (n *node[In, Out]) internal_getPath() NodePath {
-	if n.d == nil {
-		return "/_internal/error/nil_definition_in_node_handle"
+	if n.path == "" {
+		// Provide a more useful temporary path if available
+		if n.d != nil {
+			return NodePath("/_runtime/unresolved_" + string(n.d.internal_GetNodeID()))
+		}
+		return "/_runtime/unresolved_unknown" // Fallback
 	}
-	return n.d.path
+	return n.path
 }
-func (n *node[In, Out]) internal_getDefinition() any  { return n.d }
+func (n *node[In, Out]) internal_getDefinition() any  { return n.d } // Return the concrete *definition
 func (n *node[In, Out]) internal_getInputSource() any { return n.inputSource }
 func (n *node[In, Out]) internal_out() (any, error) {
+	// Standard nodes don't have a direct output like 'into' nodes.
 	return nil, fmt.Errorf("internal_out called on a standard node handle (%s); result only available via internal execution", n.internal_getPath())
 }
+func (n *node[In, Out]) internal_setPath(p NodePath) { n.path = p }
 
 // --- Compile-time checks ---
 var _ ExecutionHandle[any] = (*node[any, any])(nil)
 var _ NodeDefinition[any, any] = (*definition[any, any])(nil)
-
-// Check implementation of the embedded interface implicitly
-// (The NodeDefinition check above verifies createExecution exists)
+var _ definitionGetter = (*definition[any, any])(nil) // Ensure definition implements the getter interface
 
 // --- DefineNode function ---
-// DefineNode creates a NodeDefinition for an atomic node.
-func DefineNode[In, Out any](ctx Context, nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
-	fullPath := JoinPath(ctx.BasePath, nodeID) // JoinPath in heart.go
+func DefineNode[In, Out any](nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
 	if nodeID == "" {
-		panic(fmt.Sprintf("DefineNode requires a non-empty node ID (path: %s)", ctx.BasePath))
+		panic("DefineNode requires a non-empty node ID")
 	}
 	if resolver == nil {
-		panic(fmt.Sprintf("DefineNode requires a non-nil resolver (path: %s, id: %s)", ctx.BasePath, nodeID))
+		panic(fmt.Sprintf("DefineNode requires a non-nil resolver (id: %s)", nodeID))
 	}
-	// Context is defined in workflow.go
-	def := &definition[In, Out]{path: fullPath, resolver: resolver, defCtx: ctx}
-	return def // Returns *definition which implements NodeDefinition
+	def := &definition[In, Out]{
+		nodeID:   nodeID,
+		resolver: resolver,
+		// nodeTypeID, initializer, initErr are populated by Start() -> performInitialization()
+	}
+	return def
 }

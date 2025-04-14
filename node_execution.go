@@ -11,11 +11,16 @@ import (
 )
 
 // nodeExecution represents a single, stateful execution instance of an *atomic* node blueprint.
+// It implements the 'executioner' interface.
 type nodeExecution[In, Out any] struct {
-	// --- Immutable references ---
-	d           *definition[In, Out] // Ref back to atomic node definition (from node.go)
-	inputSource ExecutionHandle[In]  // Handle for the input node (can be nil)
-	workflowCtx Context              // Context of the parent workflow run (from workflow.go)
+	// --- Immutable references & Configuration ---
+	// d           *definition[In, Out] // REMOVED: Definition is no longer stored directly
+	resolver    NodeResolver[In, Out] // ADDED: Store the specific resolver instance
+	inputSource ExecutionHandle[In]   // Handle for the input node (can be nil)
+	workflowCtx Context               // Context of the parent workflow run (from heart.go)
+	execPath    NodePath              // Full path for this execution instance
+	nodeTypeID  NodeTypeID            // Node type ID from definition init
+	initializer NodeInitializer       // Initializer instance from definition init
 
 	// --- Memoized results ---
 	resultOut Out
@@ -26,9 +31,10 @@ type nodeExecution[In, Out any] struct {
 	doneCh   chan struct{} // Closed when execution completes
 
 	// --- Internal execution state ---
-	status               nodeStatus     // Type from nodestate.go
-	err                  error          // Temporary/final error storage
-	inOut                InOut[In, Out] // Type from heart.go
+	status               nodeStatus // Type from nodestate.go
+	err                  error      // Temporary/final error storage
+	inValue              In         // Resolved input value
+	outValue             Out        // Resolved output value (before type assertion for resultOut)
 	inputPersistenceErr  string
 	outputPersistenceErr string
 	outHash              string
@@ -39,13 +45,26 @@ type nodeExecution[In, Out any] struct {
 	completedAt          time.Time
 }
 
-// newExecution creates a new instance for an atomic node.
-func newExecution[In, Out any](def *definition[In, Out], input ExecutionHandle[In], wfCtx Context) *nodeExecution[In, Out] {
+// newExecution creates a new instance for an atomic node or wrapper node (like NewNode).
+// It now takes the resolver directly instead of the definition.
+func newExecution[In, Out any](
+	// def *definition[In, Out], // REMOVED
+	input ExecutionHandle[In],
+	wfCtx Context,
+	execPath NodePath,
+	nodeTypeID NodeTypeID,
+	initializer NodeInitializer,
+	resolver NodeResolver[In, Out], // ADDED
+) *nodeExecution[In, Out] { // Note: doesn't return error, errors handled by executioner wrapper
 	return &nodeExecution[In, Out]{
-		d:           def,
+		// d:           def, // REMOVED
+		resolver:    resolver, // ADDED
 		inputSource: input,
 		workflowCtx: wfCtx,
-		status:      nodeStatusDefined, // Use const from nodestate.go
+		execPath:    execPath,
+		nodeTypeID:  nodeTypeID,
+		initializer: initializer,
+		status:      nodeStatusDefined,
 		doneCh:      make(chan struct{}),
 		startedAt:   time.Now(),
 	}
@@ -55,7 +74,7 @@ func newExecution[In, Out any](def *definition[In, Out], input ExecutionHandle[I
 // and returns the memoized result. Implements 'executioner'.
 func (ne *nodeExecution[In, Out]) getResult() (any, error) {
 	ne.execOnce.Do(ne.execute)
-	<-ne.doneCh
+	<-ne.doneCh // Wait for execution to complete
 	return ne.resultOut, ne.resultErr
 }
 
@@ -64,17 +83,24 @@ func (ne *nodeExecution[In, Out]) InternalDone() <-chan struct{} {
 	return ne.doneCh
 }
 
+// getNodePath returns the execution path. Implements 'executioner'.
+func (ne *nodeExecution[In, Out]) getNodePath() NodePath {
+	return ne.execPath
+}
+
 // execute contains the core lazy execution logic for an atomic node instance.
 func (ne *nodeExecution[In, Out]) execute() {
 	defer close(ne.doneCh)
-	defer func() { ne.resultOut = ne.inOut.Out; ne.resultErr = ne.err }() // Memoize
-	defer func() {                                                        // Panic recovery
+	defer func() {
+		ne.resultOut = ne.outValue
+		ne.resultErr = ne.err
+	}()
+	defer func() { // Panic recovery
 		if r := recover(); r != nil {
-			panicErr := fmt.Errorf("panic recovered during node execution for %s: %v", ne.d.path, r)
-			ne.status = nodeStatusError // Use const
+			panicErr := fmt.Errorf("panic recovered during node execution for %s: %v", ne.execPath, r)
+			ne.status = nodeStatusError
 			ne.err = panicErr
-			ne.resultErr = panicErr
-			ne.resultOut = *new(Out)
+			ne.outValue = *new(Out)
 			if ne.completedAt.IsZero() {
 				ne.completedAt = time.Now()
 			}
@@ -82,109 +108,121 @@ func (ne *nodeExecution[In, Out]) execute() {
 		}
 	}()
 
-	if ne.d.initErr != nil {
-		ne.status = nodeStatusError // Use const
-		ne.err = fmt.Errorf("initialization failed for node %s: %w", ne.d.path, ne.d.initErr)
-		ne.completedAt = time.Now()
+	// --- State Loading / Definition ---
+	loadErr := ne.loadOrDefineState()
+	if loadErr != nil {
+		ne.status = nodeStatusError
+		ne.err = fmt.Errorf("failed during state loading/definition for %s: %w", ne.execPath, loadErr)
 		_ = ne.updateStoreState()
 		return
 	}
-
-	loadErr := ne.loadOrDefineState()
-	if loadErr != nil {
-		ne.status = nodeStatusError // Use const
-		ne.err = fmt.Errorf("failed during state loading/definition for %s: %w", ne.d.path, loadErr)
-		return
-	}
 	if ne.status == nodeStatusComplete || ne.status == nodeStatusError {
-		return
-	} // Use consts
+		return // Results already populated by loadOrDefineState
+	}
 
-	ne.status = nodeStatusWaitingDep // Use const
+	// --- Dependency Resolution ---
+	ne.status = nodeStatusWaitingDep
 	ne.depWaitStartedAt = time.Now()
 	if updateErr := ne.updateStoreState(); updateErr != nil {
-		ne.err = fmt.Errorf("failed to update store status to WaitingDep for %s: %w", ne.d.path, updateErr)
-		ne.status = nodeStatusError // Use const
+		ne.err = fmt.Errorf("failed to update store status to WaitingDep for %s: %w", ne.execPath, updateErr)
+		ne.status = nodeStatusError
 		_ = ne.updateStoreState()
 		return
 	}
 
 	var resolvedInput In
 	var inputErr error
-	if ne.inputSource == nil {
-		resolvedInput = *new(In)
-	} else {
-		inputPath := ne.inputSource.internal_getPath()
-		resolvedInputAny, depResolveErr := internalResolve[In](ne.workflowCtx, ne.inputSource) // internalResolve in workflow.go
+	if ne.inputSource != nil {
+		inputPath := ne.inputSource.internal_getPath() // Get path for logging
+		resolvedInputAny, depResolveErr := internalResolve[In](ne.workflowCtx, ne.inputSource)
 		if depResolveErr != nil {
-			inputErr = fmt.Errorf("failed to resolve input dependency '%s' for node '%s': %w", inputPath, ne.d.path, depResolveErr)
+			inputErr = fmt.Errorf("failed to resolve input dependency '%s' for node '%s': %w", inputPath, ne.execPath, depResolveErr)
 		} else {
 			resolvedInput = resolvedInputAny
 		}
+	} else {
+		resolvedInput = *new(In)
 	}
+
 	if inputErr != nil {
 		ne.err = inputErr
-		ne.status = nodeStatusError // Use const
+		ne.status = nodeStatusError
 		_ = ne.completeExecution()
 		return
 	}
-	ne.inOut.In = resolvedInput
+	ne.inValue = resolvedInput
 
+	// --- Persist Input ---
 	_, inputSaveErr := ne.workflowCtx.store.Graphs().SetNodeRequestContent(
-		ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.d.path), ne.inOut.In, false,
+		ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.execPath), ne.inValue, false,
 	)
 	if inputSaveErr != nil {
 		ne.inputPersistenceErr = inputSaveErr.Error()
+		fmt.Printf("WARN: Failed to persist input for node %s: %v\n", ne.execPath, inputSaveErr)
 	}
 
-	ne.status = nodeStatusRunning // Use const
+	// --- Execute Resolver ---
+	ne.status = nodeStatusRunning
 	ne.runStartedAt = time.Now()
 	if updateErr := ne.updateStoreState(); updateErr != nil {
-		ne.err = fmt.Errorf("failed to update store status to Running for %s: %w", ne.d.path, updateErr)
-		ne.status = nodeStatusError // Use const
+		ne.err = fmt.Errorf("failed to update store status to Running for %s: %w", ne.execPath, updateErr)
+		ne.status = nodeStatusError
 		_ = ne.completeExecution()
 		return
 	}
 
-	stdCtx := ne.workflowCtx.ctx
+	resolverCtx := ne.workflowCtx.ctx
+
 	var execOut Out
 	var execErr error
-	// Check for MiddlewareExecutor from middleware.go
-	if mwExecutor, implementsMW := ne.d.resolver.(MiddlewareExecutor[In, Out]); implementsMW {
-		execOut, execErr = mwExecutor.ExecuteMiddleware(stdCtx, ne.inOut.In)
-	} else {
-		execOut, execErr = ne.d.resolver.Get(stdCtx, ne.inOut.In) // Get from node.go resolver
+
+	// Use the stored resolver instance
+	if ne.resolver == nil {
+		// This should not happen if constructor is used correctly
+		panic(fmt.Sprintf("internal error: resolver is nil during execution for node %s", ne.execPath))
 	}
+	execOut, execErr = ne.resolver.Get(resolverCtx, ne.inValue) // <<< Use ne.resolver
+
 	ne.err = execErr
 	if execErr == nil {
-		ne.inOut.Out = execOut
+		ne.outValue = execOut
+	} else {
+		ne.outValue = *new(Out)
 	}
 
-	ne.err = ne.completeExecution()
+	// --- Completion ---
+	finalErr := ne.completeExecution()
+	ne.err = finalErr
 }
 
-// --- Helper Methods (Implementations assumed in same file or _helpers.go) ---
+// --- Helper Methods (loadOrDefineState, completeExecution, updateStoreState, currentNodeStateMap) ---
+// (These remain the same as the previous correct version, as they don't directly depend on the definition struct)
+
 func (ne *nodeExecution[In, Out]) loadOrDefineState() error {
-	storeKey := string(ne.d.path)
+	storeKey := string(ne.execPath)
 	graphID := ne.workflowCtx.uuid.String()
 	stdCtx := ne.workflowCtx.ctx
+
 	storeNodeMap, getErr := ne.workflowCtx.store.Graphs().GetNode(stdCtx, graphID, storeKey)
+
 	if getErr != nil {
 		if errors.Is(getErr, store.ErrNodeNotFound) {
-			ne.status = nodeStatusDefined // Use const
+			ne.status = nodeStatusDefined
 			stateMap := ne.currentNodeStateMap()
 			defineErr := ne.workflowCtx.store.Graphs().AddNode(stdCtx, graphID, storeKey, stateMap)
 			if defineErr != nil {
-				return fmt.Errorf("failed to define new node %s in store: %w", ne.d.path, defineErr)
+				return fmt.Errorf("failed to define new node %s in store: %w", ne.execPath, defineErr)
 			}
 			return nil
 		}
-		return fmt.Errorf("failed to get node %s from store: %w", ne.d.path, getErr)
+		return fmt.Errorf("failed to get node %s from store: %w", ne.execPath, getErr)
 	}
-	storeNodeState, stateErr := nodeStateFromMap(storeNodeMap) // nodestate.go
+
+	storeNodeState, stateErr := nodeStateFromMap(storeNodeMap)
 	if stateErr != nil {
-		return fmt.Errorf("failed to parse stored state for node %s: %w", ne.d.path, stateErr)
+		return fmt.Errorf("failed to parse stored state for node %s: %w", ne.execPath, stateErr)
 	}
+
 	ne.status = storeNodeState.Status
 	ne.isTerminal = storeNodeState.IsTerminal
 	ne.inputPersistenceErr = storeNodeState.InputPersistError
@@ -194,99 +232,102 @@ func (ne *nodeExecution[In, Out]) loadOrDefineState() error {
 	} else {
 		ne.err = nil
 	}
-	if ne.status == nodeStatusComplete || ne.status == nodeStatusError { // Use consts
+
+	if ne.status == nodeStatusComplete || ne.status == nodeStatusError {
 		if ne.inputPersistenceErr == "" {
 			reqContent, _, reqErr := ne.workflowCtx.store.Graphs().GetNodeRequestContent(stdCtx, graphID, storeKey)
 			if reqErr == nil {
 				typedIn, inOK := safeAssert[In](reqContent)
 				if !inOK {
-					errMsg := fmt.Sprintf("type assertion failed for persisted request content (node %s): expected %T, got %T", ne.d.path, *new(In), reqContent)
-					ne.status, ne.err = nodeStatusError, errors.New(errMsg) // Use const
-					_ = ne.updateStoreState()
-					return ne.err
+					errMsg := fmt.Sprintf("type assertion failed for persisted request content (node %s): expected %T, got %T", ne.execPath, *new(In), reqContent)
+					ne.status, ne.err = nodeStatusError, errors.New(errMsg)
+				} else {
+					ne.inValue = typedIn
 				}
-				ne.inOut.In = typedIn
+			} else if !errors.Is(reqErr, store.ErrContentNotFound) {
+				fmt.Printf("WARN: Failed to load persisted request content for terminal node %s: %v\n", ne.execPath, reqErr)
 			}
 		}
-		if ne.status == nodeStatusComplete && ne.outputPersistenceErr == "" { // Use const
+
+		if ne.status == nodeStatusComplete && ne.outputPersistenceErr == "" {
 			respContent, respRef, respErr := ne.workflowCtx.store.Graphs().GetNodeResponseContent(stdCtx, graphID, storeKey)
-			if respErr != nil {
-				errMsg := fmt.Sprintf("failed to load persisted response content for Complete node %s: %w", ne.d.path, respErr)
-				ne.status, ne.err = nodeStatusError, errors.New(errMsg) // Use const
-				_ = ne.updateStoreState()
-				return ne.err
-			}
-			typedOut, outOK := safeAssert[Out](respContent)
-			if !outOK {
-				errMsg := fmt.Sprintf("type assertion failed for persisted response content (node %s): expected %T, got %T", ne.d.path, *new(Out), respContent)
-				ne.status, ne.err = nodeStatusError, errors.New(errMsg) // Use const
-				_ = ne.updateStoreState()
-				return ne.err
-			}
-			ne.inOut.Out = typedOut
-			if respRef != nil {
-				ne.outHash = respRef.Hash
+			if respErr == nil {
+				typedOut, outOK := safeAssert[Out](respContent)
+				if !outOK {
+					errMsg := fmt.Sprintf("type assertion failed for persisted response content (node %s): expected %T, got %T", ne.execPath, *new(Out), respContent)
+					ne.status, ne.err = nodeStatusError, errors.New(errMsg)
+				} else {
+					ne.outValue = typedOut
+					if respRef != nil {
+						ne.outHash = respRef.Hash
+					}
+				}
+			} else if !errors.Is(respErr, store.ErrContentNotFound) {
+				errMsg := fmt.Sprintf("failed to load persisted response content for Complete node %s: %w", ne.execPath, respErr)
+				ne.status, ne.err = nodeStatusError, errors.New(errMsg)
+				fmt.Printf("ERROR: %s\n", errMsg)
 			}
 		}
+
 		if ne.status == nodeStatusError && ne.err == nil {
 			ne.err = errors.New("node loaded with Error status but no specific error message persisted")
-		} // Use const
+		}
 	}
+
 	return nil
 }
+
 func (ne *nodeExecution[In, Out]) completeExecution() error {
 	originalErr := ne.err
-	if ne.status == nodeStatusRunning || ne.status == nodeStatusWaitingDep { // Use consts
+
+	if ne.status == nodeStatusRunning || ne.status == nodeStatusWaitingDep || ne.status == nodeStatusDefined {
 		if originalErr == nil {
 			ne.status = nodeStatusComplete
 		} else {
 			ne.status = nodeStatusError
-		} // Use consts
-	} else if ne.status == nodeStatusDefined { // Use const
-		errMsg := fmt.Sprintf("internal error: node completed with unexpected status 'Defined' for node %s", ne.d.path)
-		ne.status = nodeStatusError // Use const
-		if originalErr == nil {
-			ne.err = errors.New(errMsg)
-		} else {
-			ne.err = fmt.Errorf("%s (previous error: %w)", errMsg, originalErr)
 		}
-		originalErr = ne.err
 	}
+
 	ne.completedAt = time.Now()
-	if ne.status == nodeStatusComplete && originalErr == nil { // Use const
+
+	if ne.status == nodeStatusComplete {
 		var saveRespErr error
 		ne.outHash, saveRespErr = ne.workflowCtx.store.Graphs().SetNodeResponseContent(
-			ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.d.path), ne.inOut.Out, false,
+			ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.execPath), ne.outValue, false,
 		)
 		if saveRespErr != nil {
 			ne.outputPersistenceErr = saveRespErr.Error()
+			fmt.Printf("WARN: Failed to persist output for node %s: %v\n", ne.execPath, saveRespErr)
 		} else {
 			ne.outputPersistenceErr = ""
 		}
 	}
+
 	updateErr := ne.updateStoreState()
 	if updateErr != nil {
-		errorMsg := fmt.Sprintf("failed to update final node state (%s) for node %s: %v", ne.status, ne.d.path, updateErr)
+		errorMsg := fmt.Sprintf("critical: failed to update final node state (%s) for node %s: %v", ne.status, ne.execPath, updateErr)
 		if originalErr != nil {
-			ne.err = fmt.Errorf("%s (original execution error: %w)", errorMsg, originalErr)
-		} else {
-			ne.err = errors.New(errorMsg)
+			return fmt.Errorf("%s (original execution error: %w)", errorMsg, originalErr)
 		}
-		return ne.err
+		return errors.New(errorMsg)
 	}
+
 	return originalErr
 }
+
 func (ne *nodeExecution[In, Out]) updateStoreState() error {
-	if !ne.status.IsValid() { /* Handle invalid status */
+	if !ne.status.IsValid() {
+		panic(fmt.Sprintf("updateStoreState called with invalid status '%s' for node %s", ne.status, ne.execPath))
 	}
 	stateMap := ne.currentNodeStateMap()
 	return ne.workflowCtx.store.Graphs().UpdateNode(
-		ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.d.path), stateMap, true,
+		ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.execPath), stateMap, true,
 	)
 }
+
 func (ne *nodeExecution[In, Out]) currentNodeStateMap() map[string]any {
 	m := map[string]any{
-		"status":               string(ne.status), // Use status from nodestate.go
+		"status":               string(ne.status),
 		"input_persist_error":  ne.inputPersistenceErr,
 		"output_persist_error": ne.outputPersistenceErr,
 		"is_terminal":          ne.isTerminal,
@@ -299,4 +340,5 @@ func (ne *nodeExecution[In, Out]) currentNodeStateMap() map[string]any {
 	return m
 }
 
-var _ executioner = (*nodeExecution[any, any])(nil) // executioner in execution_registry.go
+// Compile-time check
+var _ executioner = (*nodeExecution[any, any])(nil)

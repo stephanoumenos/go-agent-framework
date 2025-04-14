@@ -81,14 +81,25 @@ func storeDependency(dep any, ids ...NodeTypeID) error {
 	defer dependenciesMtx.Unlock()
 
 	// Check for duplicates before adding
-	// newDepType := reflect.TypeOf(dep) // <<< REMOVED UNUSED VARIABLE
 	for _, nodeID := range ids {
 		if existingDep, ok := nodeDependencies[nodeID]; ok {
-			// The error message uses existingDep and dep directly with %T.
-			return fmt.Errorf("dependency already declared for node %q (existing type: %T, new type: %T): %w", nodeID, existingDep, dep, errDuplicateDependency)
+			// Prevent registering a different dependency for the same node type ID
+			// Check types to provide a more informative error. Allow re-registering the exact same instance? Maybe not.
+			// For simplicity, disallow any re-registration for a given nodeID for now.
+			newDepType := reflect.TypeOf(dep)
+			existingDepType := reflect.TypeOf(existingDep)
+			if newDepType != existingDepType { // Check if types are different
+				return fmt.Errorf("dependency already declared for node %q (existing type: %T, new type: %T): %w", nodeID, existingDep, dep, errDuplicateDependency)
+			}
+			// Optional: Allow re-registration if the type AND value are identical?
+			// if !reflect.DeepEqual(existingDep, dep) { // Might be too strict or complex
+			// 	 return fmt.Errorf("dependency already declared for node %q with a different value (type: %T): %w", nodeID, existingDep, errDuplicateDependency)
+			// }
+			// If types are the same, maybe just skip? Or return error? Let's return error for now.
+			return fmt.Errorf("dependency already declared for node %q (type: %T): %w", nodeID, existingDep, errDuplicateDependency)
+
 		}
 	}
-	// 'newDepType' was not used.
 
 	// Add the dependency once
 	dependencies = append(dependencies, dep)
@@ -142,9 +153,34 @@ func dependencyInject(nodeInitializer any, id NodeTypeID) error {
 	expectedParamType := methodType.In(0)
 
 	if !depVal.Type().AssignableTo(expectedParamType) {
-		return fmt.Errorf("dependency with wrong type provided for node type %q: expected %s, got %s: %w", id, expectedParamType, depVal.Type(), errDependencyWrongType)
+		// Check if the provided dependency is a pointer that can be assigned to an interface parameter
+		if expectedParamType.Kind() == reflect.Interface && depVal.Type().Implements(expectedParamType) {
+			// This is acceptable (e.g., passing *openai.Client to clientiface.ClientInterface)
+		} else if depVal.CanConvert(expectedParamType) {
+			// Less safe, but might handle some cases like type aliases. Be cautious.
+			// Consider adding stricter checks if needed.
+		} else {
+			// If it's not assignable and not an interface implementation, it's a type mismatch.
+			return fmt.Errorf("dependency with wrong type provided for node type %q: expected %s, got %s: %w", id, expectedParamType, depVal.Type(), errDependencyWrongType)
+		}
 	}
 
+	// If the expected type is an interface, ensure we pass the value that implements it.
+	// If the stored dependency is a pointer to a struct, and the interface is expected,
+	// the direct value (depVal) should work if the pointer type implements the interface.
 	method.Call([]reflect.Value{depVal})
 	return nil
+}
+
+// ResetDependencies clears all registered dependencies.
+// IMPORTANT: This should ONLY be used in test code (e.g., via t.Cleanup)
+// to ensure test isolation when dealing with the global dependency state.
+// Calling this in production code will break dependency injection.
+func ResetDependencies() {
+	dependenciesMtx.Lock()
+	defer dependenciesMtx.Unlock()
+	dependencies = make([]any, 0)
+	nodeDependencies = make(map[NodeTypeID]any)
+	// Optionally log that reset happened if debugging tests
+	// fmt.Println("DEBUG: Global dependencies reset.")
 }
