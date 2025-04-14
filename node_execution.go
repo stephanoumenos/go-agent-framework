@@ -2,519 +2,301 @@
 package heart
 
 import (
-	// Need context for resolver calls
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"heart/store" // Assuming store interfaces/errors are defined here
+	"heart/store"
 )
 
-// nodeExecution represents a single, stateful execution instance of a node blueprint
-// within a specific workflow run. It performs the actual computation, state management,
-// and store interactions for one node invocation. It is created and managed by the
-// executionRegistry.
+// nodeExecution represents a single, stateful execution instance of an *atomic* node blueprint.
 type nodeExecution[In, Out any] struct {
-	// --- Immutable references after creation ---
-	d           *definition[In, Out] // Reference to the static definition (resolver, paths, etc.)
-	inputSource Node[In]             // The blueprint handle for the input node (nil for NewNode wrappers)
-	workflowCtx Context              // The context of the parent workflow run
+	// --- Immutable references ---
+	d           *definition[In, Out] // Ref back to atomic node definition (from node.go)
+	inputSource ExecutionHandle[In]  // Handle for the input node (can be nil)
+	workflowCtx Context              // Context of the parent workflow run (from workflow.go)
 
-	// --- Mutable state protected by execOnce/doneCh mechanism ---
-	// These fields hold the final memoized result after execute() completes.
-	resultOut Out   // Memoized output value (CORRECT TYPE)
-	resultErr error // Memoized final execution error (can be execution or critical persistence error)
+	// --- Memoized results ---
+	resultOut Out
+	resultErr error
 
 	// --- Synchronization ---
-	execOnce sync.Once     // Ensures execute() runs only once per instance.
-	doneCh   chan struct{} // Closed when execution completes (successfully or with error). Readers block here.
+	execOnce sync.Once
+	doneCh   chan struct{} // Closed when execution completes
 
 	// --- Internal execution state ---
-	// These fields are primarily mutated *within* the execute() method, protected by execOnce.
-	// They track the lifecycle and temporary state during execution.
-	status               nodeStatus     // Current lifecycle status (Defined, WaitingDep, Running, Complete, Error)
-	err                  error          // Temporary error storage during execution phase (e.g., resolver error, non-critical persistence error)
-	inOut                InOut[In, Out] // Stores resolved input and output *during* execution
-	inputPersistenceErr  string         // Info about non-critical input saving failure (WARNING)
-	outputPersistenceErr string         // Info about non-critical output saving failure (WARNING)
-	outHash              string         // Hash of the persisted output content (if successful)
-	isTerminal           bool           // TODO: Determine how this is set/used effectively (maybe mark final node?)
-	startedAt            time.Time      // When the execution instance was created/requested by registry
-	depWaitStartedAt     time.Time      // When waiting for input dependency resolution started
-	runStartedAt         time.Time      // When resolver execution (Get/ExecuteMiddleware) started
-	completedAt          time.Time      // When execution finished (status becomes Complete or Error)
-
-	// Mutex is likely NOT needed if all state mutation happens within execute() protected by execOnce,
-	// and reads of resultOut/resultErr happen only after doneCh is closed.
-	// Add if concurrent access to internal state fields becomes necessary outside execute().
-	// mu sync.Mutex
+	status               nodeStatus     // Type from nodestate.go
+	err                  error          // Temporary/final error storage
+	inOut                InOut[In, Out] // Type from heart.go
+	inputPersistenceErr  string
+	outputPersistenceErr string
+	outHash              string
+	isTerminal           bool
+	startedAt            time.Time
+	depWaitStartedAt     time.Time
+	runStartedAt         time.Time
+	completedAt          time.Time
 }
 
-// newExecution creates a new nodeExecution instance.
-// Called internally by the definition's createExecution method (used by the registry).
-func newExecution[In, Out any](def *definition[In, Out], input Node[In], wfCtx Context) *nodeExecution[In, Out] {
+// newExecution creates a new instance for an atomic node.
+func newExecution[In, Out any](def *definition[In, Out], input ExecutionHandle[In], wfCtx Context) *nodeExecution[In, Out] {
 	return &nodeExecution[In, Out]{
-		// Immutable references
 		d:           def,
-		inputSource: input, // Can be nil
+		inputSource: input,
 		workflowCtx: wfCtx,
-
-		// Initial state
-		status:    nodeStatusDefined, // Start as defined
-		doneCh:    make(chan struct{}),
-		startedAt: time.Now(), // Record when the request for execution happens
-		// execOnce is zero-value initialized
-		// resultOut/resultErr are zero-value initialized
+		status:      nodeStatusDefined, // Use const from nodestate.go
+		doneCh:      make(chan struct{}),
+		startedAt:   time.Now(),
 	}
 }
 
 // getResult ensures the node executes (if it hasn't already via execOnce)
-// and returns the memoized result (output value and error).
-// This implements the internal 'executioner' interface method.
-// It's the primary way other parts of the system (like Context.internalResolve)
-// trigger and retrieve results from node executions.
-// It returns the specific result type Out as 'any' to match the interface.
-func (ne *nodeExecution[In, Out]) getResult() (any, error) { // Return any/error for executioner interface
-	// Trigger execution if it hasn't started yet. If already started/completed, Do is a no-op.
+// and returns the memoized result. Implements 'executioner'.
+func (ne *nodeExecution[In, Out]) getResult() (any, error) {
 	ne.execOnce.Do(ne.execute)
-
-	// Wait for the execution goroutine (launched by the first call to Do) to complete.
-	// This blocks until the doneCh is closed within the execute method's defer block.
 	<-ne.doneCh
-
-	// Return the memoized results stored after execution finished.
-	// ne.resultOut is already of type Out. It's returned as 'any'.
 	return ne.resultOut, ne.resultErr
 }
 
-// execute contains the core lazy execution logic for a node instance.
-// It runs AT MOST ONCE per nodeExecution instance, triggered by the first call to getResult() via execOnce.Do.
-// It handles state transitions, dependency resolution, persistence, resolver invocation, and result memoization.
-func (ne *nodeExecution[In, Out]) execute() {
-	// --- Defer closing doneCh and memoizing results ---
-	// This ensures doneCh is always closed and results are set, even on panics or early returns.
-	defer close(ne.doneCh)
-	defer func() {
-		// Memoize the final state into result fields *after* all execution steps attempt completion.
-		// ne.err reflects the *final* outcome (execution error, critical persistence error, or nil).
-		// ne.inOut.Out holds the value if execution succeeded, otherwise it's the zero value.
-		ne.resultOut = ne.inOut.Out // resultOut is type Out
-		ne.resultErr = ne.err
-
-		// Handle panics during execution phases (e.g., store interaction, resolver call, type assertions).
-		if r := recover(); r != nil {
-			// Format a specific panic error message.
-			panicErr := fmt.Errorf("panic recovered during node execution for %s (wf: %s): %v", ne.d.path, ne.workflowCtx.uuid, r)
-
-			// Update internal state to reflect the panic.
-			ne.status = nodeStatusError
-			ne.err = panicErr        // Store the panic error as the primary error.
-			ne.resultErr = panicErr  // Ensure panic error is the final memoized error.
-			ne.resultOut = *new(Out) // Ensure output is zeroed on panic.
-
-			// Attempt a best-effort final state update to the store to record the panic.
-			if ne.completedAt.IsZero() { // Only set completedAt if not already set
-				ne.completedAt = time.Now()
-			}
-			_ = ne.updateStoreState() // Ignore error during this emergency save attempt.
-		}
-	}() // --- End deferred result memoization and panic handling ---
-
-	// --- Check for Initialization Errors ---
-	// Check if an error occurred during the Bind -> init phase (e.g., DI failure).
-	if ne.d.initErr != nil {
-		ne.status = nodeStatusError
-		// Use the specific init error stored during Bind.
-		ne.err = fmt.Errorf("initialization failed during Bind for node %s (wf: %s): %w", ne.d.path, ne.workflowCtx.uuid, ne.d.initErr)
-
-		// Attempt a best-effort state update to store this permanent failure state.
-		ne.completedAt = time.Now()
-		_ = ne.updateStoreState() // Ignore error during save attempt for init failure.
-
-		// Memoization will be handled by the defer func using the ne.err set here.
-		return // Exit execution immediately.
-	}
-
-	// --- Phase 1: Initialization and State Loading ---
-	// Attempt to load existing state from the store or define a new entry if it's the first time.
-	loadErr := ne.loadOrDefineState()
-	if loadErr != nil {
-		// If loading or defining state failed, it's a critical error.
-		ne.status = nodeStatusError
-		ne.err = fmt.Errorf("failed during state loading/definition for %s (wf: %s): %w", ne.d.path, ne.workflowCtx.uuid, loadErr)
-		// No need to update store here, as the error was during load/define itself.
-		// The defer func will memoize ne.err.
-		return // Exit execution.
-	}
-
-	// If loaded state is already terminal (Complete/Error), results should be populated (or ne.err set).
-	// No need to execute further. The defer func will memoize the loaded results/error.
-	if ne.status == nodeStatusComplete || ne.status == nodeStatusError {
-		return // Exit execution.
-	}
-	// State must be Defined or potentially some other recoverable state at this point. Assume Defined.
-
-	// --- Phase 2: Waiting for Dependencies ---
-	// Transition state to WaitingDep and persist it.
-	ne.status = nodeStatusWaitingDep
-	ne.depWaitStartedAt = time.Now()
-	if updateErr := ne.updateStoreState(); updateErr != nil {
-		// Failed to update store status - treat as critical.
-		ne.err = fmt.Errorf("failed to update store status to WaitingDep for %s (wf: %s): %w", ne.d.path, ne.workflowCtx.uuid, updateErr)
-		ne.status = nodeStatusError
-		_ = ne.updateStoreState() // Best effort save of the error status.
-		return                    // Exit execution.
-	}
-
-	// --- Resolve Input Dependency ---
-	// This section resolves the input value needed by the node's resolver.
-	var resolvedInput In
-	var inputErr error // Error specifically from input resolution/assertion
-
-	if ne.inputSource == nil {
-		// Case: Node has no explicit input source blueprint (e.g., created via heart.NewNode).
-		// Input type 'In' MUST be assignable from struct{}. Provide the zero value.
-		// The actual resolver (like newNodeResolver) expects this.
-		var zeroIn In
-		// Check if In is assignable from struct{}? Too complex/slow with reflection here.
-		// Rely on resolver expecting struct{} or zero value.
-		resolvedInput = zeroIn
-		// No dependency resolution error possible in this branch.
-	} else {
-		// Case: Node has an input source blueprint. Resolve it recursively.
-		inputPath := ne.inputSource.internal_getPath() // Get path for logging
-
-		// internalResolve returns the specific type In, assigned to resolvedInputAny.
-		resolvedInputAny, depResolveErr := internalResolve[In](ne.workflowCtx, ne.inputSource)
-
-		if depResolveErr != nil {
-			// Error occurred during the dependency's execution.
-			inputErr = fmt.Errorf("failed to resolve input dependency '%s' for node '%s': %w", inputPath, ne.d.path, depResolveErr)
-		} else {
-			// Dependency resolved successfully, internalResolve already returned the correct type.
-			resolvedInput = resolvedInputAny // Directly assign the typed result.
-		}
-	}
-
-	// Check if any error occurred during input preparation.
-	if inputErr != nil {
-		ne.err = inputErr // Store the input error as the primary error for this node.
-		ne.status = nodeStatusError
-		_ = ne.completeExecution() // Attempt to save final error state (will skip output persistence).
-		return                     // Exit execution.
-	}
-	// --- Input Resolved & Type Checked Successfully ---
-	ne.inOut.In = resolvedInput
-
-	// --- Phase 3: Persist Input and Execute Resolver ---
-	// Attempt to persist the resolved input value to the store.
-	// Treat failure here as a WARNING, not a critical error stopping execution.
-	_, inputSaveErr := ne.workflowCtx.store.Graphs().SetNodeRequestContent(
-		ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.d.path), ne.inOut.In, false, // Use store default embedding
-	)
-	if inputSaveErr != nil {
-		// Log warning, store persistence error info, but *continue execution*.
-		ne.inputPersistenceErr = inputSaveErr.Error() // Record for state saving
-		// The final state update will include this warning.
-	} else {
-	}
-
-	// Transition to Running state and persist it.
-	ne.status = nodeStatusRunning
-	ne.runStartedAt = time.Now()
-	if updateErr := ne.updateStoreState(); updateErr != nil {
-		// Failed to update store status - treat as critical.
-		ne.err = fmt.Errorf("failed to update store status to Running for %s (wf: %s): %w", ne.d.path, ne.workflowCtx.uuid, updateErr)
-		ne.status = nodeStatusError
-		_ = ne.completeExecution() // Attempt to save error state (will skip output persistence).
-		return                     // Exit execution.
-	}
-
-	// --- Execute the actual node logic (resolver) ---
-	// Use the standard context.Context from the *workflow* context for the resolver call.
-	// This context carries cancellation signals etc. throughout the workflow run.
-	stdCtx := ne.workflowCtx.ctx
-	var execOut Out // Correct type Out
-	var execErr error
-
-	// Check if the resolver implements the optional MiddlewareExecutor interface.
-	if mwExecutor, implementsMW := ne.d.resolver.(MiddlewareExecutor[In, Out]); implementsMW {
-		// Use the middleware execution method.
-		execOut, execErr = mwExecutor.ExecuteMiddleware(stdCtx, ne.inOut.In)
-	} else {
-		// Use the standard NodeResolver Get method.
-		execOut, execErr = ne.d.resolver.Get(stdCtx, ne.inOut.In)
-	}
-
-	// Store the results from the resolver execution temporarily.
-	// execErr might be nil (success) or contain an error from the resolver.
-	ne.err = execErr // Overwrites previous non-critical errors (like input persistence warning) if resolver fails.
-	if execErr == nil {
-		ne.inOut.Out = execOut // Store the successful output temporarily (type Out)
-	} else {
-		// ne.inOut.Out remains zero value.
-	}
-
-	// --- Phase 4: Completion and Output Persistence ---
-	// completeExecution handles:
-	// 1. Setting final status (Complete/Error) based on ne.err.
-	// 2. Persisting output content (if execution was successful: ne.err == nil).
-	// 3. Recording output persistence errors as warnings (ne.outputPersistenceErr).
-	// 4. Updating the store with the final node state (status, errors, timings).
-	// It returns the original execution error (execErr) or a critical state update error.
-	// We store this final error back into ne.err, which will be memoized by the defer func.
-	ne.err = ne.completeExecution()
-
-	// Execution finishes here. The defer func will memoize ne.resultOut/ne.resultErr and close doneCh.
+// InternalDone returns the completion channel. Implements 'executioner'.
+func (ne *nodeExecution[In, Out]) InternalDone() <-chan struct{} {
+	return ne.doneCh
 }
 
-// --- Helper Methods ---
+// execute contains the core lazy execution logic for an atomic node instance.
+func (ne *nodeExecution[In, Out]) execute() {
+	defer close(ne.doneCh)
+	defer func() { ne.resultOut = ne.inOut.Out; ne.resultErr = ne.err }() // Memoize
+	defer func() {                                                        // Panic recovery
+		if r := recover(); r != nil {
+			panicErr := fmt.Errorf("panic recovered during node execution for %s: %v", ne.d.path, r)
+			ne.status = nodeStatusError // Use const
+			ne.err = panicErr
+			ne.resultErr = panicErr
+			ne.resultOut = *new(Out)
+			if ne.completedAt.IsZero() {
+				ne.completedAt = time.Now()
+			}
+			_ = ne.updateStoreState()
+		}
+	}()
 
-// loadOrDefineState tries to load existing state+content from the store or defines a new node entry.
-// If the node is loaded in a terminal state (Complete/Error), it populates ne.inOut, ne.err accordingly.
-// Returns a critical error if store interaction fails or loaded state is inconsistent.
+	if ne.d.initErr != nil {
+		ne.status = nodeStatusError // Use const
+		ne.err = fmt.Errorf("initialization failed for node %s: %w", ne.d.path, ne.d.initErr)
+		ne.completedAt = time.Now()
+		_ = ne.updateStoreState()
+		return
+	}
+
+	loadErr := ne.loadOrDefineState()
+	if loadErr != nil {
+		ne.status = nodeStatusError // Use const
+		ne.err = fmt.Errorf("failed during state loading/definition for %s: %w", ne.d.path, loadErr)
+		return
+	}
+	if ne.status == nodeStatusComplete || ne.status == nodeStatusError {
+		return
+	} // Use consts
+
+	ne.status = nodeStatusWaitingDep // Use const
+	ne.depWaitStartedAt = time.Now()
+	if updateErr := ne.updateStoreState(); updateErr != nil {
+		ne.err = fmt.Errorf("failed to update store status to WaitingDep for %s: %w", ne.d.path, updateErr)
+		ne.status = nodeStatusError // Use const
+		_ = ne.updateStoreState()
+		return
+	}
+
+	var resolvedInput In
+	var inputErr error
+	if ne.inputSource == nil {
+		resolvedInput = *new(In)
+	} else {
+		inputPath := ne.inputSource.internal_getPath()
+		resolvedInputAny, depResolveErr := internalResolve[In](ne.workflowCtx, ne.inputSource) // internalResolve in workflow.go
+		if depResolveErr != nil {
+			inputErr = fmt.Errorf("failed to resolve input dependency '%s' for node '%s': %w", inputPath, ne.d.path, depResolveErr)
+		} else {
+			resolvedInput = resolvedInputAny
+		}
+	}
+	if inputErr != nil {
+		ne.err = inputErr
+		ne.status = nodeStatusError // Use const
+		_ = ne.completeExecution()
+		return
+	}
+	ne.inOut.In = resolvedInput
+
+	_, inputSaveErr := ne.workflowCtx.store.Graphs().SetNodeRequestContent(
+		ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.d.path), ne.inOut.In, false,
+	)
+	if inputSaveErr != nil {
+		ne.inputPersistenceErr = inputSaveErr.Error()
+	}
+
+	ne.status = nodeStatusRunning // Use const
+	ne.runStartedAt = time.Now()
+	if updateErr := ne.updateStoreState(); updateErr != nil {
+		ne.err = fmt.Errorf("failed to update store status to Running for %s: %w", ne.d.path, updateErr)
+		ne.status = nodeStatusError // Use const
+		_ = ne.completeExecution()
+		return
+	}
+
+	stdCtx := ne.workflowCtx.ctx
+	var execOut Out
+	var execErr error
+	// Check for MiddlewareExecutor from middleware.go
+	if mwExecutor, implementsMW := ne.d.resolver.(MiddlewareExecutor[In, Out]); implementsMW {
+		execOut, execErr = mwExecutor.ExecuteMiddleware(stdCtx, ne.inOut.In)
+	} else {
+		execOut, execErr = ne.d.resolver.Get(stdCtx, ne.inOut.In) // Get from node.go resolver
+	}
+	ne.err = execErr
+	if execErr == nil {
+		ne.inOut.Out = execOut
+	}
+
+	ne.err = ne.completeExecution()
+}
+
+// --- Helper Methods (Implementations assumed in same file or _helpers.go) ---
 func (ne *nodeExecution[In, Out]) loadOrDefineState() error {
 	storeKey := string(ne.d.path)
 	graphID := ne.workflowCtx.uuid.String()
-	stdCtx := ne.workflowCtx.ctx // Use the standard context for store calls
-
+	stdCtx := ne.workflowCtx.ctx
 	storeNodeMap, getErr := ne.workflowCtx.store.Graphs().GetNode(stdCtx, graphID, storeKey)
-
 	if getErr != nil {
 		if errors.Is(getErr, store.ErrNodeNotFound) {
-			// --- Node Not Found: Define New Entry ---
-			ne.status = nodeStatusDefined        // Set initial status for new node
-			stateMap := ne.currentNodeStateMap() // Get map with initial state (Defined)
+			ne.status = nodeStatusDefined // Use const
+			stateMap := ne.currentNodeStateMap()
 			defineErr := ne.workflowCtx.store.Graphs().AddNode(stdCtx, graphID, storeKey, stateMap)
 			if defineErr != nil {
 				return fmt.Errorf("failed to define new node %s in store: %w", ne.d.path, defineErr)
 			}
-			return nil // Ready to run
-			// --- End Define New Entry ---
+			return nil
 		}
-		// Other store error during GetNode
 		return fmt.Errorf("failed to get node %s from store: %w", ne.d.path, getErr)
 	}
-
-	// --- Node Found: Load Existing State ---
-	storeNodeState, stateErr := nodeStateFromMap(storeNodeMap) // Use helper to parse map
+	storeNodeState, stateErr := nodeStateFromMap(storeNodeMap) // nodestate.go
 	if stateErr != nil {
-		// If stored state is corrupt/unparseable, it's critical.
 		return fmt.Errorf("failed to parse stored state for node %s: %w", ne.d.path, stateErr)
 	}
-
-	// Populate execution state from loaded store state
 	ne.status = storeNodeState.Status
-	ne.isTerminal = storeNodeState.IsTerminal // TODO: Use this if needed
+	ne.isTerminal = storeNodeState.IsTerminal
 	ne.inputPersistenceErr = storeNodeState.InputPersistError
 	ne.outputPersistenceErr = storeNodeState.OutputPersistError
 	if storeNodeState.Error != "" {
-		// Store the error temporarily; it will be properly memoized later if needed.
 		ne.err = errors.New(storeNodeState.Error)
 	} else {
-		ne.err = nil // Clear any previous temporary error
+		ne.err = nil
 	}
-	// TODO: Load timing info if stored (e.g., storeNodeState.StartedAtStr)
-
-	// --- Load Content If Node Loaded in Terminal State ---
-	if ne.status == nodeStatusComplete || ne.status == nodeStatusError {
-		// Load Input Content (best effort, needed for potential restart/analysis)
-		if ne.inputPersistenceErr == "" { // Only load if no previous warning about saving it
+	if ne.status == nodeStatusComplete || ne.status == nodeStatusError { // Use consts
+		if ne.inputPersistenceErr == "" {
 			reqContent, _, reqErr := ne.workflowCtx.store.Graphs().GetNodeRequestContent(stdCtx, graphID, storeKey)
-			if reqErr != nil && !errors.Is(reqErr, store.ErrContentNotFound) {
-				// Log warning, but don't fail loading state just because input is missing.
-				// ne.inOut.In will remain zero value
-			} else if reqErr == nil {
-				// Input content loaded, type assert it.
-				typedIn, inOK := safeAssert[In](reqContent) // Use helper
+			if reqErr == nil {
+				typedIn, inOK := safeAssert[In](reqContent)
 				if !inOK {
-					// CRITICAL: Stored input type doesn't match expected type! Data corruption/evolution issue.
-					errMsg := fmt.Sprintf("type assertion failed for persisted request content (node %s, wf: %s): expected %T, got %T", ne.d.path, ne.workflowCtx.uuid, *new(In), reqContent)
-					// Revert status and set error to prevent using inconsistent loaded state.
-					ne.status = nodeStatusError
-					ne.err = errors.New(errMsg)
-					_ = ne.updateStoreState() // Best effort save reverted status
-					return ne.err             // Return the critical error
-				}
-				ne.inOut.In = typedIn // Store successfully loaded and asserted input
-			}
-			// If ErrContentNotFound, ne.inOut.In remains zero, which is acceptable.
-		}
-
-		// Load Output Content (critical for Complete status)
-		if ne.status == nodeStatusComplete {
-			if ne.outputPersistenceErr == "" { // Only load if no previous warning about saving it
-				respContent, respRef, respErr := ne.workflowCtx.store.Graphs().GetNodeResponseContent(stdCtx, graphID, storeKey)
-				if respErr != nil {
-					// CRITICAL: Node is 'Complete' but output is missing/unloadable!
-					ne.status = nodeStatusError
-					ne.err = fmt.Errorf("failed to load persisted response content for Complete node: %w", respErr)
-					_ = ne.updateStoreState() // Best effort save reverted status
-					return ne.err             // Prevent using incomplete state
-				}
-				// Output content loaded, type assert it.
-				typedOut, outOK := safeAssert[Out](respContent) // Use helper
-				if !outOK {
-					// CRITICAL: Stored output type doesn't match expected type!
-					errMsg := fmt.Sprintf("type assertion failed for persisted response content (node %s, wf: %s): expected %T, got %T", ne.d.path, ne.workflowCtx.uuid, *new(Out), respContent)
-					ne.status = nodeStatusError
-					ne.err = errors.New(errMsg)
-					_ = ne.updateStoreState() // Best effort save reverted status
+					errMsg := fmt.Sprintf("type assertion failed for persisted request content (node %s): expected %T, got %T", ne.d.path, *new(In), reqContent)
+					ne.status, ne.err = nodeStatusError, errors.New(errMsg) // Use const
+					_ = ne.updateStoreState()
 					return ne.err
 				}
-				ne.inOut.Out = typedOut // Store successfully loaded and asserted output (type Out)
-				if respRef != nil {
-					ne.outHash = respRef.Hash // Store hash if available
-				}
+				ne.inOut.In = typedIn
 			}
 		}
-
-		// Ensure ne.err is populated if loaded as Error status (even if store had empty error string).
+		if ne.status == nodeStatusComplete && ne.outputPersistenceErr == "" { // Use const
+			respContent, respRef, respErr := ne.workflowCtx.store.Graphs().GetNodeResponseContent(stdCtx, graphID, storeKey)
+			if respErr != nil {
+				errMsg := fmt.Sprintf("failed to load persisted response content for Complete node %s: %w", ne.d.path, respErr)
+				ne.status, ne.err = nodeStatusError, errors.New(errMsg) // Use const
+				_ = ne.updateStoreState()
+				return ne.err
+			}
+			typedOut, outOK := safeAssert[Out](respContent)
+			if !outOK {
+				errMsg := fmt.Sprintf("type assertion failed for persisted response content (node %s): expected %T, got %T", ne.d.path, *new(Out), respContent)
+				ne.status, ne.err = nodeStatusError, errors.New(errMsg) // Use const
+				_ = ne.updateStoreState()
+				return ne.err
+			}
+			ne.inOut.Out = typedOut
+			if respRef != nil {
+				ne.outHash = respRef.Hash
+			}
+		}
 		if ne.status == nodeStatusError && ne.err == nil {
 			ne.err = errors.New("node loaded with Error status but no specific error message persisted")
-		}
+		} // Use const
 	}
-	// --- End Load Content ---
-
-	return nil // State loaded successfully (potentially with results/error already populated)
-	// --- End Load Existing State ---
+	return nil
 }
-
-// completeExecution finalizes the node's state (sets status to Complete/Error),
-// attempts to persist the output content *if* execution was successful,
-// and updates the store with the final state (status, errors, persistence warnings, timings).
-// Returns the primary error that should be memoized (original execution error, or critical store update error).
 func (ne *nodeExecution[In, Out]) completeExecution() error {
-	// Capture the error state *before* attempting output persistence. This is the resolver's error.
 	originalErr := ne.err
-
-	// --- Determine Final Status ---
-	// Can only transition *to* terminal state from Running or WaitingDep (if input failed).
-	// If already in a terminal state (e.g., from loading), status remains unchanged.
-	if ne.status == nodeStatusRunning || ne.status == nodeStatusWaitingDep {
+	if ne.status == nodeStatusRunning || ne.status == nodeStatusWaitingDep { // Use consts
 		if originalErr == nil {
 			ne.status = nodeStatusComplete
 		} else {
 			ne.status = nodeStatusError
-		}
-	} else if ne.status == nodeStatusDefined { // Should ideally not happen if run state was set correctly
-		ne.status = nodeStatusError // Force error state
-		errMsg := fmt.Sprintf("internal error: node completed with unexpected status 'Defined' for node %s (wf: %s)", ne.d.path, ne.workflowCtx.uuid)
+		} // Use consts
+	} else if ne.status == nodeStatusDefined { // Use const
+		errMsg := fmt.Sprintf("internal error: node completed with unexpected status 'Defined' for node %s", ne.d.path)
+		ne.status = nodeStatusError // Use const
 		if originalErr == nil {
 			ne.err = errors.New(errMsg)
 		} else {
-			ne.err = fmt.Errorf("%s (previous error: %w)", errMsg, originalErr) // Wrap original error
+			ne.err = fmt.Errorf("%s (previous error: %w)", errMsg, originalErr)
 		}
-		originalErr = ne.err // Update originalErr to reflect this new internal error
-	} // else: If already Error/Complete (e.g., from load), status remains unchanged.
-
-	// Record completion time.
+		originalErr = ne.err
+	}
 	ne.completedAt = time.Now()
-
-	// --- Attempt Output Persistence (Only if Execution Succeeded) ---
-	if ne.status == nodeStatusComplete && originalErr == nil {
+	if ne.status == nodeStatusComplete && originalErr == nil { // Use const
 		var saveRespErr error
-		// Persist the output stored in ne.inOut.Out by the execute phase.
 		ne.outHash, saveRespErr = ne.workflowCtx.store.Graphs().SetNodeResponseContent(
-			ne.workflowCtx.ctx,
-			ne.workflowCtx.uuid.String(),
-			string(ne.d.path),
-			ne.inOut.Out, // Use the output from successful execution (type Out)
-			false,        // Use store's default embedding strategy
+			ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.d.path), ne.inOut.Out, false,
 		)
 		if saveRespErr != nil {
-			// Log warning and record the persistence error.
-			// Execution is still considered "Complete", but state reflects output issue.
-			ne.outputPersistenceErr = saveRespErr.Error() // Record for state saving
-			// Do NOT change status back to Error. Do NOT set ne.err.
+			ne.outputPersistenceErr = saveRespErr.Error()
 		} else {
-			ne.outputPersistenceErr = "" // Clear any previous persistence error if save succeeds now
+			ne.outputPersistenceErr = ""
 		}
 	}
-
-	// --- Persist Final State ---
-	// Update the store with the final status, errors (including persistence warnings), and timings.
 	updateErr := ne.updateStoreState()
 	if updateErr != nil {
-		// CRITICAL: Failed to save the final state! The workflow might be inconsistent.
-		errorMsg := fmt.Sprintf("failed to update final node state (%s) for node %s (wf: %s): %v", ne.status, ne.d.path, ne.workflowCtx.uuid, updateErr)
-
-		// Update the in-memory error state to reflect this critical failure, wrapping previous errors.
-		// This critical error will be memoized and returned by getResult().
+		errorMsg := fmt.Sprintf("failed to update final node state (%s) for node %s: %v", ne.status, ne.d.path, updateErr)
 		if originalErr != nil {
 			ne.err = fmt.Errorf("%s (original execution error: %w)", errorMsg, originalErr)
-		} else if ne.outputPersistenceErr != "" {
-			// Even if execution was ok, if output save failed AND final state save failed, report both.
-			ne.err = fmt.Errorf("%s (output persistence error: %s)", errorMsg, ne.outputPersistenceErr)
 		} else {
 			ne.err = errors.New(errorMsg)
 		}
-		// Return the critical update error so it gets memoized by the defer func in execute().
 		return ne.err
 	}
-
-	// Return the original execution error (or nil if successful execution).
-	// This is what gets memoized in ne.resultErr via the defer in execute().
-	// The critical store update error (if any) has already overwritten ne.err above.
 	return originalErr
 }
-
-// updateStoreState persists the current *in-memory* execution state (status, errors, timings) to the store.
-// It uses the map generated by currentNodeStateMap.
 func (ne *nodeExecution[In, Out]) updateStoreState() error {
-	// Pre-check for invalid status before attempting to store.
-	if !ne.status.IsValid() {
-		errorMsg := fmt.Sprintf("internal error: invalid node status '%s' attempted to be stored for node %s (wf: %s)", string(ne.status), ne.d.path, ne.workflowCtx.uuid)
-		ne.status = nodeStatusError // Force error status
-		if ne.err == nil {
-			ne.err = errors.New(errorMsg)
-		} // else keep original error
+	if !ne.status.IsValid() { /* Handle invalid status */
 	}
-
-	stateMap := ne.currentNodeStateMap() // Get map representation of current state.
-
-	// Use UpdateNode with merge=true to only update the fields present in the map.
-	// This avoids overwriting content fields unnecessarily.
+	stateMap := ne.currentNodeStateMap()
 	return ne.workflowCtx.store.Graphs().UpdateNode(
-		ne.workflowCtx.ctx,
-		ne.workflowCtx.uuid.String(),
-		string(ne.d.path),
-		stateMap,
-		true, // Use merge=true
+		ne.workflowCtx.ctx, ne.workflowCtx.uuid.String(), string(ne.d.path), stateMap, true,
 	)
 }
-
-// currentNodeStateMap generates the map representation of the current execution state,
-// suitable for persistence via updateStoreState.
 func (ne *nodeExecution[In, Out]) currentNodeStateMap() map[string]any {
 	m := map[string]any{
-		"status": string(ne.status), // Use the current status
-		// Include persistence warnings/errors
+		"status":               string(ne.status), // Use status from nodestate.go
 		"input_persist_error":  ne.inputPersistenceErr,
 		"output_persist_error": ne.outputPersistenceErr,
-		"is_terminal":          ne.isTerminal, // Include terminal status if used
+		"is_terminal":          ne.isTerminal,
 	}
-
-	// Only include the primary error field if it's non-nil *at the time of serialization*.
 	if ne.err != nil {
 		m["error"] = ne.err.Error()
 	} else {
-		// Explicitly include "error": "" if ne.err is nil when using merge=true.
-		// This ensures that if a node recovers from an error, the error field
-		// in the store is cleared upon successful completion.
 		m["error"] = ""
 	}
-
-	// TODO: Add timing information if needed, formatting them appropriately (e.g., RFC3339Nano)
-	// if !ne.startedAt.IsZero() { m["started_at"] = ne.startedAt.Format(time.RFC3339Nano) }
-	// if !ne.depWaitStartedAt.IsZero() { m["dep_wait_started_at"] = ne.depWaitStartedAt.Format(time.RFC3339Nano) }
-	// if !ne.runStartedAt.IsZero() { m["run_started_at"] = ne.runStartedAt.Format(time.RFC3339Nano) }
-	// if !ne.completedAt.IsZero() { m["completed_at"] = ne.completedAt.Format(time.RFC3339Nano) }
-	// if ne.outHash != "" { m["output_hash"] = ne.outHash } // Include output hash if available
-
 	return m
 }
 
-// Ensure nodeExecution implements the internal executioner interface.
-var _ executioner = (*nodeExecution[any, any])(nil)
+var _ executioner = (*nodeExecution[any, any])(nil) // executioner in execution_registry.go

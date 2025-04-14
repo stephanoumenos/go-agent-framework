@@ -1,15 +1,16 @@
+// ./examples/if/example_test.go
 //go:build integration
 
-// ./examples/if/main_test.go
 package main
 
 import (
 	"context"
 	"fmt"
 	"heart"
-	"heart/nodes/openai" // Ensure this import path matches your project structure
+	"heart/nodes/openai"
 	"heart/store"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,21 +20,20 @@ import (
 )
 
 // --- Mock OpenAI Client ---
-// (Definition remains the same)
-type mockOpenAIClient struct {
-	responses map[string]goopenai.ChatCompletionResponse
-	errors    map[string]error
-	// Track calls for assertion - Use a slice accessible by sub-tests
+type mockIfOpenAIClient struct {
+	responses                 map[string]goopenai.ChatCompletionResponse
+	errors                    map[string]error
+	callsMtx                  sync.Mutex // Protects Calls slice
 	CreateChatCompletionCalls []goopenai.ChatCompletionRequest
 }
 
-// CreateChatCompletion implements the required method from clientiface.ClientInterface.
-func (m *mockOpenAIClient) CreateChatCompletion(ctx context.Context, req goopenai.ChatCompletionRequest) (goopenai.ChatCompletionResponse, error) {
-	// Appending is now safe because sub-tests run sequentially
+// CreateChatCompletion implements the required method.
+func (m *mockIfOpenAIClient) CreateChatCompletion(ctx context.Context, req goopenai.ChatCompletionRequest) (goopenai.ChatCompletionResponse, error) {
+	m.callsMtx.Lock()
 	m.CreateChatCompletionCalls = append(m.CreateChatCompletionCalls, req) // Track call
+	m.callsMtx.Unlock()
 
-	// Determine which response to give based on system prompt content and user message
-	key := ""
+	key := "unknown"
 	var systemPrompt, userPrompt string
 	if len(req.Messages) > 0 {
 		for _, msg := range req.Messages {
@@ -45,7 +45,8 @@ func (m *mockOpenAIClient) CreateChatCompletion(ctx context.Context, req goopena
 		}
 	}
 
-	if strings.Contains(systemPrompt, "Analyze the sentiment") {
+	// Determine key based on prompts
+	if strings.Contains(systemPrompt, "Analyze sentiment") {
 		if strings.Contains(userPrompt, "PositiveTopic") {
 			key = "sentiment_positive"
 		} else if strings.Contains(userPrompt, "NegativeTopic") {
@@ -57,17 +58,17 @@ func (m *mockOpenAIClient) CreateChatCompletion(ctx context.Context, req goopena
 		key = "false_branch"
 	}
 
-	if err, exists := m.errors[key]; exists {
-		fmt.Printf("[Mock OpenAI] Returning error for key '%s'\n", key)
+	// Return mock response/error based on key
+	if err, exists := m.errors[key]; exists && err != nil {
+		fmt.Printf("[Mock OpenAI If Test] Returning error for key '%s'\n", key)
 		return goopenai.ChatCompletionResponse{}, err
 	}
 	if resp, exists := m.responses[key]; exists {
-		fmt.Printf("[Mock OpenAI] Returning response for key '%s'\n", key)
+		fmt.Printf("[Mock OpenAI If Test] Returning response for key '%s'\n", key)
 		return resp, nil
 	}
 
-	fmt.Printf("[Mock OpenAI] No predefined response/error for key '%s'. Returning default empty success.\n", key)
-	// Default response or error if no match
+	fmt.Printf("[Mock OpenAI If Test] No predefined response/error for key '%s'. Returning default empty success.\n", key)
 	return goopenai.ChatCompletionResponse{
 		Choices: []goopenai.ChatCompletionChoice{{
 			Message:      goopenai.ChatCompletionMessage{Content: "Mocked default response"},
@@ -79,41 +80,41 @@ func (m *mockOpenAIClient) CreateChatCompletion(ctx context.Context, req goopena
 // --- Test Function ---
 
 func TestConditionalWorkflowLLMConditionIntegration(t *testing.T) {
-	// Parent test remains sequential to ensure DI setup completes first.
+	// Parent test runs sequentially to set up shared mock and DI correctly.
 
 	// 1. Setup ONE Mock Client for ALL Paths
-	mockClient := &mockOpenAIClient{
+	mockClient := &mockIfOpenAIClient{
 		CreateChatCompletionCalls: make([]goopenai.ChatCompletionRequest, 0), // Reset calls
 		responses: map[string]goopenai.ChatCompletionResponse{
-			"sentiment_positive": {
+			"sentiment_positive": { // Response for positive sentiment check
 				Choices: []goopenai.ChatCompletionChoice{{
-					Message:      goopenai.ChatCompletionMessage{Content: " POSITIVE "},
+					Message:      goopenai.ChatCompletionMessage{Content: " POSITIVE "}, // Note leading/trailing spaces
 					FinishReason: goopenai.FinishReasonStop,
 				}},
 			},
-			"sentiment_negative": {
+			"sentiment_negative": { // Response for negative sentiment check
 				Choices: []goopenai.ChatCompletionChoice{{
 					Message:      goopenai.ChatCompletionMessage{Content: "Negative"},
 					FinishReason: goopenai.FinishReasonStop,
 				}},
 			},
-			"true_branch": {
+			"true_branch": { // Response for the optimistic branch LLM call
 				Choices: []goopenai.ChatCompletionChoice{{
 					Message:      goopenai.ChatCompletionMessage{Content: "Mocked uplifting statement!"},
 					FinishReason: goopenai.FinishReasonStop,
 				}},
 			},
-			"false_branch": {
+			"false_branch": { // Response for the cautionary branch LLM call
 				Choices: []goopenai.ChatCompletionChoice{{
 					Message:      goopenai.ChatCompletionMessage{Content: "Mocked cautionary statement."},
 					FinishReason: goopenai.FinishReasonStop,
 				}},
 			},
 		},
-		errors: nil,
+		errors: make(map[string]error), // No errors expected
 	}
 
-	// 2. Setup Dependencies & Store - ONLY ONCE
+	// 2. Setup Dependencies & Store - ONLY ONCE for the parent test
 	err := heart.Dependencies(openai.Inject(mockClient))
 	require.NoError(t, err, "Failed to inject mock dependencies")
 	memStore := store.NewMemoryStore()
@@ -123,52 +124,70 @@ func TestConditionalWorkflowLLMConditionIntegration(t *testing.T) {
 
 	// --- Test Case 1: Positive Path ---
 	t.Run("PositiveSentimentPath", func(t *testing.T) {
-		// t.Parallel() // REMOVED - Run sub-tests sequentially
+		// Sub-tests run sequentially due to shared mockClient call tracking.
+		// Do NOT add t.Parallel() here unless mock client is made safe for concurrent call tracking.
 
 		inputTopicPositive := "PositiveTopic: A great success"
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		// Execute Workflow
-		startCallCount := len(mockClient.CreateChatCompletionCalls) // Should be 0 here
+		mockClient.callsMtx.Lock()
+		startCallCount := len(mockClient.CreateChatCompletionCalls) // Record call count before execution
+		mockClient.callsMtx.Unlock()
+
 		resultHandle := conditionalWorkflowDef.New(ctx, inputTopicPositive)
-		finalStatement, err := resultHandle.Out()
+		finalStatement, err := resultHandle.Out(ctx)
 
 		// Assertions for Positive Path
 		require.NoError(t, err, "Workflow execution failed on positive path")
 		assert.Equal(t, "Mocked uplifting statement!", finalStatement, "Expected uplifting statement")
 
 		// Analyze calls made *during this sub-test's execution*
-		endCallCount := len(mockClient.CreateChatCompletionCalls) // Should be 2 here
+		mockClient.callsMtx.Lock()
+		endCallCount := len(mockClient.CreateChatCompletionCalls)
+		callsMade := mockClient.CreateChatCompletionCalls[startCallCount:endCallCount] // Get calls specific to this run
+		mockClient.callsMtx.Unlock()
+
 		require.Equal(t, 2, endCallCount-startCallCount, "Expected two calls to OpenAI mock for positive path")
-		callsMade := mockClient.CreateChatCompletionCalls[startCallCount:endCallCount]
-		assert.Contains(t, callsMade[0].Messages[0].Content, "Analyze the sentiment")
-		assert.Contains(t, callsMade[1].Messages[0].Content, "optimistic assistant")
+		// Call 1: Sentiment check
+		assert.Contains(t, callsMade[0].Messages[0].Content, "Analyze sentiment", "Call 1 (Positive Path) system prompt mismatch")
+		assert.Contains(t, callsMade[0].Messages[1].Content, "PositiveTopic", "Call 1 (Positive Path) user prompt mismatch")
+		// Call 2: Optimistic branch
+		assert.Contains(t, callsMade[1].Messages[0].Content, "optimistic assistant", "Call 2 (Positive Path) system prompt mismatch")
 	})
 
 	// --- Test Case 2: Negative Path ---
 	t.Run("NegativeSentimentPath", func(t *testing.T) {
-		// t.Parallel() // REMOVED - Run sub-tests sequentially
+		// Sub-tests run sequentially.
 
 		inputTopicNegative := "NegativeTopic: A difficult challenge"
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		// Execute Workflow
-		startCallCount := len(mockClient.CreateChatCompletionCalls) // Should be 2 here (from previous test)
+		mockClient.callsMtx.Lock()
+		startCallCount := len(mockClient.CreateChatCompletionCalls) // Record call count before execution
+		mockClient.callsMtx.Unlock()
+
 		resultHandle := conditionalWorkflowDef.New(ctx, inputTopicNegative)
-		finalStatement, err := resultHandle.Out()
+		finalStatement, err := resultHandle.Out(ctx)
 
 		// Assertions for Negative Path
 		require.NoError(t, err, "Workflow execution failed on negative path")
 		assert.Equal(t, "Mocked cautionary statement.", finalStatement, "Expected cautionary statement")
 
 		// Analyze calls made *during this sub-test's execution*
-		endCallCount := len(mockClient.CreateChatCompletionCalls) // Should be 4 here
-		require.Equal(t, 2, endCallCount-startCallCount, "Expected two calls to OpenAI mock for negative path")
-		callsMade := mockClient.CreateChatCompletionCalls[startCallCount:endCallCount] // Check calls with index 2 and 3
-		assert.Contains(t, callsMade[0].Messages[0].Content, "Analyze the sentiment")
-		assert.Contains(t, callsMade[1].Messages[0].Content, "cautious assistant")
-	})
+		mockClient.callsMtx.Lock()
+		endCallCount := len(mockClient.CreateChatCompletionCalls)
+		callsMade := mockClient.CreateChatCompletionCalls[startCallCount:endCallCount] // Get calls specific to this run
+		mockClient.callsMtx.Unlock()
 
+		require.Equal(t, 2, endCallCount-startCallCount, "Expected two calls to OpenAI mock for negative path")
+		// Call 1: Sentiment check
+		assert.Contains(t, callsMade[0].Messages[0].Content, "Analyze sentiment", "Call 1 (Negative Path) system prompt mismatch")
+		assert.Contains(t, callsMade[0].Messages[1].Content, "NegativeTopic", "Call 1 (Negative Path) user prompt mismatch")
+		// Call 2: Cautionary branch
+		assert.Contains(t, callsMade[1].Messages[0].Content, "cautious assistant", "Call 2 (Negative Path) system prompt mismatch")
+	})
 }

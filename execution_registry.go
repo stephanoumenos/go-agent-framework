@@ -6,29 +6,24 @@ import (
 	"sync"
 )
 
-// executionCreator is an internal interface implemented by *definition[In, Out]
-// to allow the registry to create the correct execution instance without knowing In/Out types.
-type executionCreator interface {
-	// createExecution takes the input source blueprint (as any) and workflow context,
-	// performs necessary type assertions internally, and returns the specific
-	// nodeExecution instance cast to the executioner interface.
+// ExecutionCreator defines the capability of creating an execution instance.
+// This is implemented by atomic node definitions (*definition).
+type ExecutionCreator interface {
+	// createExecution creates the specific nodeExecution instance.
+	// It takes the input source handle (as any) and workflow context.
 	createExecution(inputSourceAny any, wfCtx Context) (executioner, error)
 }
 
-// executionRegistry manages nodeExecution instances for a single workflow run.
+// executionRegistry manages executioner instances for atomic nodes within a workflow run.
 type executionRegistry struct {
-	executions map[NodePath]executioner // Store executioner directly
-	mu         sync.Mutex               // Protects the executions map
+	executions map[NodePath]executioner
+	mu         sync.Mutex
 }
 
-// executioner is the internal interface representing a stateful execution instance.
-// It's implemented by *nodeExecution[In, Out].
+// executioner is the internal interface for nodeExecution instances.
 type executioner interface {
-	// getResult triggers execution (if not already done) and returns
-	// the memoized result (value and error). The value is returned as 'any'
-	// to hide the specific 'Out' type from the registry. The caller
-	// (internalResolve) is responsible for the final type assertion.
 	getResult() (any, error)
+	InternalDone() <-chan struct{}
 }
 
 // newExecutionRegistry creates a new registry.
@@ -36,51 +31,54 @@ func newExecutionRegistry() *executionRegistry {
 	return &executionRegistry{executions: make(map[NodePath]executioner)}
 }
 
-// getOrCreateExecution finds or creates the nodeExecution instance for a given blueprint.
-// It is now generic, accepting the specific Node[Out] type.
-// It uses the executionCreator interface on the node's definition to instantiate
-// the correct type-specific execution instance.
-// It returns the instance conforming to the 'executioner' interface.
-func getOrCreateExecution[Out any](r *executionRegistry, nodeBlueprint Node[Out], wfCtx Context) executioner {
-	// --- Get Node Path and Definition ---
-	// The input `nodeBlueprint` is already the specific Node[Out] type.
-	// We can directly call the interface methods.
-	nodePath := nodeBlueprint.internal_getPath()
-	// --- End Get Node Path ---
+// getOrCreateExecution finds or creates the executioner instance for an atomic node handle.
+// Called lazily by internalResolve. Asserts definition to ExecutionCreator.
+func getOrCreateExecution[Out any](r *executionRegistry, handle ExecutionHandle[Out], wfCtx Context) executioner {
+	nodePath := handle.internal_getPath()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Check if an execution instance already exists for this path.
 	execInstance, exists := r.executions[nodePath]
 	if !exists {
-		// --- Create New Execution Instance ---
-		// Get definition and input source (still as 'any' as these are retrieved
-		// via the OutputBlueprint interface methods which hide specific types).
-		defAny := nodeBlueprint.internal_getDefinition()
-		inputSourceAny := nodeBlueprint.internal_getInputSource()
+		defAny := handle.internal_getDefinition()
+		inputSourceAny := handle.internal_getInputSource()
 
-		// Assert the definition to the executionCreator interface.
-		creator, ok := defAny.(executionCreator)
-		if !ok {
-			// This is an internal error - the definition type doesn't implement the necessary method.
-			panic(fmt.Sprintf("registry: definition type %T does not implement executionCreator for path %s", defAny, nodePath))
+		if defAny == nil { // Handle 'into' nodes edge case
+			val, err := handle.internal_out()
+			dummy := &dummyExecutioner{value: val, err: err, done: make(chan struct{})}
+			close(dummy.done)
+			r.executions[nodePath] = dummy
+			return dummy
 		}
 
-		// Call the creator method. This method handles the specific In/Out types internally.
-		// It returns the specific *nodeExecution[In, Out] cast to the executioner interface.
+		// Assert the definition object to the ExecutionCreator interface.
+		creator, ok := defAny.(ExecutionCreator)
+		if !ok {
+			// This means the concrete type (e.g., *definition) doesn't have createExecution.
+			panic(fmt.Sprintf("registry: definition type %T does not implement ExecutionCreator for path %s", defAny, nodePath))
+		}
+
+		// Call the createExecution method via the interface.
 		newExec, err := creator.createExecution(inputSourceAny, wfCtx)
 		if err != nil {
-			// Handle error during creation (e.g., type assertion failed inside createExecution).
-			panic(fmt.Sprintf("registry: failed to create execution instance via creator for %s: %v", nodePath, err))
+			panic(fmt.Sprintf("registry: failed to create execution instance via ExecutionCreator for %s: %v", nodePath, err))
 		}
 
-		// Store the newly created executioner instance.
 		r.executions[nodePath] = newExec
 		execInstance = newExec
-		// --- End Create New Execution Instance ---
 	}
-
-	// Return the existing or newly created executioner instance.
 	return execInstance
 }
+
+// --- Dummy Executioner ---
+type dummyExecutioner struct {
+	value any
+	err   error
+	done  chan struct{}
+}
+
+func (d *dummyExecutioner) getResult() (any, error)       { return d.value, d.err }
+func (d *dummyExecutioner) InternalDone() <-chan struct{} { return d.done }
+
+var _ executioner = (*dummyExecutioner)(nil)

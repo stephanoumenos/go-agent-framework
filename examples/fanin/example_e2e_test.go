@@ -4,7 +4,8 @@ package main
 
 import (
 	"context"
-	"heart"
+	"errors" // Import errors for checking
+	"heart"  // Use WorkflowResultHandle etc.
 	"heart/nodes/openai"
 	"heart/store"
 	"os"
@@ -19,26 +20,20 @@ import (
 // --- Test Function ---
 
 func TestThreePerspectivesWorkflowE2E(t *testing.T) {
-	// This tag ensures this test only runs with `go test -tags=e2e ./...`
-
-	// 1. Check for API Key and Skip if missing
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		t.Skip("Skipping E2E test: OPENAI_API_KEY environment variable not set.")
 	}
-
-	t.Parallel() // Mark test as parallelizable
+	t.Parallel()
 
 	// 2. Setup REAL Client, Dependencies & Store
 	realClient := goopenai.NewClient(apiKey)
-
-	// Inject REAL client
 	err := heart.Dependencies(openai.Inject(realClient))
 	require.NoError(t, err, "Failed to inject real dependencies")
-
-	memStore := store.NewMemoryStore() // Memory store is still fine
+	memStore := store.NewMemoryStore()
 
 	// 3. Define Workflow
+	// DefineWorkflow returns WorkflowDefinition
 	threePerspectiveWorkflowDef := heart.DefineWorkflow(threePerspectivesWorkflow, heart.WithStore(memStore))
 
 	// 4. Prepare Input
@@ -47,24 +42,30 @@ func TestThreePerspectivesWorkflowE2E(t *testing.T) {
 	// 5. Execute Workflow - Use a longer timeout for real API calls
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second) // Longer timeout
 	defer cancel()
+	// New returns WorkflowResultHandle
 	resultHandle := threePerspectiveWorkflowDef.New(ctx, inputQuestion)
 
 	// 6. Get Result & Assert
-	perspectivesResult, err := resultHandle.Out()
+	// Use Out(ctx) on the WorkflowResultHandle
+	perspectivesResult, err := resultHandle.Out(ctx) // Pass context
 
 	// 7. Assertions
-	// We expect success, but check for context deadline exceeded specifically
-	if ctx.Err() == context.DeadlineExceeded {
-		t.Fatalf("E2E test failed: Timeout exceeded (%v)", err)
+	// Check for specific context errors first
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("E2E test failed waiting for result: Timeout exceeded (%v)", ctx.Err())
 	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("E2E test failed waiting for result: Context canceled (%v)", ctx.Err())
+	}
+	// Check for general workflow execution errors
 	require.NoError(t, err, "E2E Workflow execution failed")
 
-	// Assert that fields are non-empty, but NOT specific content
+	// Assert that fields are non-empty
 	assert.NotEmpty(t, perspectivesResult.Optimistic, "Optimistic perspective should not be empty")
 	assert.NotEmpty(t, perspectivesResult.Pessimistic, "Pessimistic perspective should not be empty")
 	assert.NotEmpty(t, perspectivesResult.Realistic, "Realistic perspective should not be empty")
 
-	// Optional: Log the output for manual inspection if needed
+	// Optional: Log the output
 	t.Logf("Optimistic: %s", perspectivesResult.Optimistic)
 	t.Logf("Pessimistic: %s", perspectivesResult.Pessimistic)
 	t.Logf("Realistic: %s", perspectivesResult.Realistic)

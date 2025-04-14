@@ -7,6 +7,27 @@ import (
 	// time "time" // Keep if timing fields are added later
 )
 
+// nodeStatus defines the lifecycle states of a node execution.
+type nodeStatus string
+
+const (
+	nodeStatusDefined    nodeStatus = "NODE_STATUS_DEFINED"     // Initial state, not yet processed.
+	nodeStatusWaitingDep nodeStatus = "NODE_STATUS_WAITING_DEP" // Waiting for input dependency to resolve.
+	nodeStatusRunning    nodeStatus = "NODE_STATUS_RUNNING"     // Resolver function is executing.
+	nodeStatusComplete   nodeStatus = "NODE_STATUS_COMPLETE"    // Execution finished successfully.
+	nodeStatusError      nodeStatus = "NODE_STATUS_ERROR"       // Execution failed.
+)
+
+// IsValid checks if a string represents a valid nodeStatus.
+func (s nodeStatus) IsValid() bool {
+	switch s {
+	case nodeStatusDefined, nodeStatusWaitingDep, nodeStatusRunning, nodeStatusComplete, nodeStatusError:
+		return true
+	default:
+		return false
+	}
+}
+
 // nodeState represents the serializable state of a node execution instance.
 // Matches the fields persisted by nodeExecution.currentNodeStateMap() and
 // read by nodeExecution.loadOrDefineState().
@@ -17,13 +38,9 @@ type nodeState struct {
 	OutputPersistError string     `json:"output_persist_error,omitempty"` // Info about output saving failure
 	IsTerminal         bool       `json:"is_terminal"`                    // If this node is a terminal node in its branch
 	// TODO: Add timing fields if needed (e.g., started_at, completed_at)
-	// StartedAtStr   string     `json:"started_at,omitempty"`
-	// CompletedAtStr string     `json:"completed_at,omitempty"`
 }
 
 // toMap converts nodeState to a map suitable for storage.
-// This is primarily used for testing or potential future direct state manipulation.
-// The primary serialization path is nodeExecution.currentNodeStateMap().
 func (ns *nodeState) toMap() map[string]any {
 	m := map[string]any{
 		"status":               string(ns.Status),
@@ -37,7 +54,6 @@ func (ns *nodeState) toMap() map[string]any {
 }
 
 // nodeStateFromMap creates a nodeState from a map retrieved from storage.
-// Used by nodeExecution.loadOrDefineState().
 func nodeStateFromMap(data map[string]any) (*nodeState, error) {
 	var ns nodeState
 
@@ -60,7 +76,7 @@ func nodeStateFromMap(data map[string]any) (*nodeState, error) {
 	if errVal, ok := data["error"]; ok {
 		if errStr, ok := errVal.(string); ok {
 			ns.Error = errStr
-		} else if errVal != nil { // Allow nil, but error on wrong type
+		} else if errVal != nil {
 			return nil, fmt.Errorf("invalid type for error field: expected string, got %T", errVal)
 		}
 	}
@@ -89,8 +105,8 @@ func nodeStateFromMap(data map[string]any) (*nodeState, error) {
 			return nil, fmt.Errorf("invalid type for is_terminal field: expected bool, got %T", termVal)
 		}
 	} else {
-		ns.IsTerminal = false // Default if missing
-	}
+		ns.IsTerminal = false
+	} // Default if missing
 
 	// TODO: Load timing fields if added
 
@@ -98,20 +114,16 @@ func nodeStateFromMap(data map[string]any) (*nodeState, error) {
 }
 
 // newStateFromExecution creates a nodeState snapshot from a nodeExecution instance.
-// Useful for testing or debugging registry state.
-func newStateFromExecution[In, Out any](ne *nodeExecution[In, Out]) *nodeState {
+func newStateFromExecution[In, Out any](ne *nodeExecution[In, Out]) *nodeState { // Uses nodeExecution type from node_execution.go
 	state := &nodeState{
 		Status:             ne.status,
 		IsTerminal:         ne.isTerminal,
 		InputPersistError:  ne.inputPersistenceErr,
 		OutputPersistError: ne.outputPersistenceErr,
 	}
-	// Capture the *current* error state during execution/completion
 	if ne.err != nil {
 		state.Error = ne.err.Error()
 	}
 	// TODO: Add timing fields if needed
-	// if !ne.startedAt.IsZero() { state.StartedAtStr = ne.startedAt.Format(time.RFC3339Nano) }
-	// if !ne.completedAt.IsZero() { state.CompletedAtStr = ne.completedAt.Format(time.RFC3339Nano) }
 	return state
 }
