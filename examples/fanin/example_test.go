@@ -108,13 +108,8 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	memStore := store.NewMemoryStore()
 
 	// 3. Define Workflow using DefineNode
-	// Create the workflow resolver
-	workflowResolver := heart.NewWorkflowResolver("threePerspectivesTest", threePerspectivesWorkflowHandler)
 	// Define the workflow node
-	threePerspectiveWorkflowDef := heart.DefineNode[string, perspectives](
-		"threePerspectivesTest", // Assign an ID to the workflow definition
-		workflowResolver,
-	)
+	threePerspectiveWorkflowDef := heart.WorkflowFromFunc("threePerspectivesTest", threePerspectivesWorkflowHandler)
 
 	// 4. Prepare Input
 	inputQuestion := "Should companies invest heavily in custom AGI research?"

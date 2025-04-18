@@ -135,11 +135,7 @@ func TestStructuredOutputWorkflowIntegration(t *testing.T) {
 
 	// 3. Define Workflow using DefineNode
 	workflowID := heart.NodeID("recipeGeneratorWorkflowTest")
-	workflowResolver := heart.NewWorkflowResolver(workflowID, structuredOutputWorkflowHandler)
-	recipeWorkflowDef := heart.DefineNode(
-		workflowID,
-		workflowResolver,
-	)
+	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// 4. Prepare Input
 	inputTopic := "Quick vegan chocolate chip cookies"
@@ -199,11 +195,7 @@ func TestStructuredOutputWorkflowIntegration_LLMError(t *testing.T) {
 
 	// 3. Define Workflow
 	workflowID := heart.NodeID("recipeGeneratorWorkflowErrorTest")
-	workflowResolver := heart.NewWorkflowResolver(workflowID, structuredOutputWorkflowHandler)
-	recipeWorkflowDef := heart.DefineNode(
-		workflowID,
-		workflowResolver,
-	)
+	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// 4. Prepare Input
 	inputTopic := "Error case"
@@ -251,11 +243,7 @@ func TestStructuredOutputWorkflowIntegration_ParsingError(t *testing.T) {
 
 	// 3. Define Workflow
 	workflowID := heart.NodeID("recipeGeneratorWorkflowParseErrorTest")
-	workflowResolver := heart.NewWorkflowResolver(workflowID, structuredOutputWorkflowHandler)
-	recipeWorkflowDef := heart.DefineNode(
-		workflowID,
-		workflowResolver,
-	)
+	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// 4. Prepare Input
 	inputTopic := "Bad JSON"

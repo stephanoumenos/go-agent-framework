@@ -38,11 +38,7 @@ func TestStructuredOutputWorkflowE2E(t *testing.T) {
 
 	// 3. Define Workflow using DefineNode
 	workflowID := heart.NodeID("recipeGeneratorWorkflowE2E")
-	workflowResolver := heart.NewWorkflowResolver(workflowID, structuredOutputWorkflowHandler)
-	recipeWorkflowDef := heart.DefineNode(
-		workflowID,
-		workflowResolver,
-	)
+	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// 4. Prepare Input
 	inputTopic := "Super quick and easy microwave mug cake with chocolate"

@@ -142,14 +142,8 @@ func main() {
 	fmt.Println("Using FileStore at './workflows_fanin'")
 	// defer os.RemoveAll("./workflows_fanin") // Optional cleanup
 
-	// --- Workflow Definition using DefineNode ---
-	// Create the workflow resolver first
-	workflowResolver := heart.NewWorkflowResolver("threePerspectives", threePerspectivesWorkflowHandler)
-	// Define the workflow like any other node
-	threePerspectiveWorkflowDef := heart.DefineNode[string, perspectives](
-		"threePerspectives", // Node ID for the workflow definition
-		workflowResolver,
-	)
+	// --- Workflow Definition ---
+	threePerspectiveWorkflowDef := heart.WorkflowFromFunc("threePerspectives", threePerspectivesWorkflowHandler)
 
 	// --- Workflow Execution ---
 	fmt.Println("Defining 3-Perspective workflow...")

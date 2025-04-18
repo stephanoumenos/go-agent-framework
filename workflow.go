@@ -2,6 +2,7 @@
 package heart
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,66 @@ import (
 	// "heart/store" // Store interaction now primarily in heart.go (Execute) and node_execution.go
 	// "github.com/google/uuid" // Moved to heart.go
 )
+
+// --- Workflow Handler Type ---
+// (Remains the same)
+type WorkflowHandlerFunc[In, Out any] func(ctx Context, in In) ExecutionHandle[Out]
+
+// --- WorkflowResolver ---
+// (Remains the same, already implements ExecutionCreator correctly)
+type workflowResolver[In, Out any] struct {
+	handler WorkflowHandlerFunc[In, Out]
+	nodeID  NodeID
+}
+
+func newWorkflowResolver[In, Out any](nodeID NodeID, handler WorkflowHandlerFunc[In, Out]) NodeResolver[In, Out] {
+	if handler == nil {
+		panic("NewWorkflowResolver requires a non-nil handler")
+	}
+	if nodeID == "" {
+		panic("NewWorkflowResolver requires a non-empty node ID")
+	}
+	return &workflowResolver[In, Out]{handler: handler, nodeID: nodeID}
+}
+
+func WorkflowFromFunc[In, Out any](nodeID NodeID, handler WorkflowHandlerFunc[In, Out]) NodeDefinition[In, Out] {
+	resolver := newWorkflowResolver(nodeID, handler)
+	return DefineNode(nodeID, resolver)
+}
+
+func (r *workflowResolver[In, Out]) Init() NodeInitializer {
+	return genericNodeInitializer{id: "system:workflow"}
+}
+func (r *workflowResolver[In, Out]) Get(ctx context.Context, in In) (Out, error) {
+	// This should not be called for workflows; execution happens via workflowExecutioner.
+	// Keep the error safeguard.
+	return *new(Out), fmt.Errorf("internal error: Get called directly on workflowResolver for node ID '%s'", r.nodeID)
+}
+
+// ExecutionCreator implementation was moved to execution_registry.go for clarity previously,
+// but conceptually it belongs to the resolver. Let's ensure it's here.
+func (r *workflowResolver[In, Out]) createExecution(
+	execPath NodePath,
+	inputSourceAny any,
+	wfCtx Context,
+	nodeID NodeID,
+	nodeTypeID NodeTypeID,
+	initializer NodeInitializer,
+) (executioner, error) {
+	var inputHandle ExecutionHandle[In]
+	if inputSourceAny != nil {
+		var ok bool
+		inputHandle, ok = inputSourceAny.(ExecutionHandle[In])
+		if !ok {
+			return nil, fmt.Errorf("internal error: type assertion failed for workflow input source handle for %s: expected ExecutionHandle[%T], got %T", execPath, *new(In), inputSourceAny)
+		}
+	}
+	we := newWorkflowExecutioner[In, Out](r, inputHandle, wfCtx, execPath)
+	return we, nil
+}
+
+var _ NodeResolver[any, any] = (*workflowResolver[any, any])(nil)
+var _ ExecutionCreator = (*workflowResolver[any, any])(nil)
 
 // NodeIDGetter defines an interface specifically for getting the NodeID from a definition.
 // This avoids issues with asserting generic interfaces like NodeDefinition[any, any].

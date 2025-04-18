@@ -96,11 +96,7 @@ func main() {
 	// --- Workflow Definition ---
 	// CORRECTED: Use NewWorkflowResolver and DefineNode
 	workflowID := heart.NodeID("recipeGeneratorWorkflow")
-	workflowResolver := heart.NewWorkflowResolver(workflowID, structuredOutputWorkflowHandler)
-	recipeWorkflowDef := heart.DefineNode(
-		workflowID,
-		workflowResolver,
-	)
+	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// --- Workflow Execution ---
 	fmt.Println("Defining and executing recipe workflow...")

@@ -134,13 +134,8 @@ func WithStructuredOutput[SOut any](
 	// Generate the handler function, capturing the nextNodeDef.
 	handler := structuredOutputHandler[SOut](nextNodeDef)
 
-	// Create a workflow resolver using the generated handler function.
-	workflowResolver := heart.NewWorkflowResolver(nodeID, handler)
-
 	// Define and return the NodeDefinition for this structured output workflow.
 	// Use the structuredOutputNodeTypeID as the underlying type identifier.
-	return heart.DefineNode(
-		nodeID,           // Use the user-provided nodeID for this specific instance
-		workflowResolver, // The resolver containing the workflow logic
-	)
+
+	return heart.WorkflowFromFunc(nodeID, handler)
 }

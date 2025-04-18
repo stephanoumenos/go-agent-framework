@@ -93,7 +93,7 @@ func storeDependency(dep any, ids ...NodeTypeID) error {
 			}
 			// Optional: Allow re-registration if the type AND value are identical?
 			// if !reflect.DeepEqual(existingDep, dep) { // Might be too strict or complex
-			// 	 return fmt.Errorf("dependency already declared for node %q with a different value (type: %T): %w", nodeID, existingDep, errDuplicateDependency)
+			//	 return fmt.Errorf("dependency already declared for node %q with a different value (type: %T): %w", nodeID, existingDep, errDuplicateDependency)
 			// }
 			// If types are the same, maybe just skip? Or return error? Let's return error for now.
 			return fmt.Errorf("dependency already declared for node %q (type: %T): %w", nodeID, existingDep, errDuplicateDependency)
