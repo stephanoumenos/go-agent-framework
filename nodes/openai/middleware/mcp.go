@@ -1,467 +1,246 @@
 // ./nodes/openai/middleware/mcp.go
 package middleware
 
-/*
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"heart"
-	"strings"
-	"sync"
+	"heart/nodes/openai/internal"
 
-	"github.com/mark3labs/mcp-go/server"
 	openai "github.com/sashabaranov/go-openai"
+	// MCP client interface is implicitly required via DI for internal nodes
 )
-
-const withMCPNodeTypeID heart.NodeTypeID = "openai_with_mcp_middleware"
 
 var (
-	errNoToolCalls         = errors.New("no tool calls present in the response")
-	errMCPToolNotFound     = errors.New("MCP tool not found")
-	errMCPInvocationError  = errors.New("error invoking MCP tool")
-	errUnsupportedToolCall = errors.New("unsupported tool call type in response")
+	errMaxIterationsReached = errors.New("maximum tool invocation iterations reached")
 )
 
-// --- Helper Function: Convert MCP Tool to OpenAI FunctionDefinition ---
+const (
+	// maxToolIterations limits the number of LLM <-> Tool rounds to prevent infinite loops.
+	maxToolIterations = 10
+)
 
-func mcpToolToOpenAIFunction(mcpTool heart.MCPTool) (openai.FunctionDefinition, error) {
-	// Basic conversion, might need more robust schema handling depending on MCP spec details
-	params := mcpTool.InputSchema
-	if params == nil {
-		params = make(map[string]any)
-	}
-	// Ensure 'properties' exists as OpenAI spec requires it, even if empty.
-	if _, ok := params["properties"]; !ok {
-		params["properties"] = make(map[string]any)
-	}
-	// Ensure 'type' is 'object' if properties are defined. MCP might not enforce this.
-	if _, ok := params["type"]; !ok {
-		params["type"] = "object"
-	}
-
-	return openai.FunctionDefinition{
-		Name:        mcpTool.Name,
-		Description: mcpTool.Description,
-		Parameters:  params,
-	}, nil
-}
-
-// --- Helper Function: Invoke MCP Tool ---
-
-// invokeMCPTool finds the correct server and calls the tool.
-func invokeMCPTool(
-	ctx context.Context,
-	toolCall openai.ToolCall,
-	servers []server.MCPServer,
-	serverMap map[string]server.MCPServer, // Map tool name to server for quick lookup
-) (string, error) {
-	if toolCall.Type != openai.ToolTypeFunction {
-		return "", fmt.Errorf("%w: expected function, got %s", errUnsupportedToolCall, toolCall.Type)
-	}
-
-	toolName := toolCall.Function.Name
-	server, ok := serverMap[toolName]
-	if !ok {
-		return "", fmt.Errorf("%w: %s", errMCPToolNotFound, toolName)
-	}
-
-	var inputArgs map[string]any
-	if toolCall.Function.Arguments != "" {
-		err := json.Unmarshal([]byte(toolCall.Function.Arguments), &inputArgs)
-		if err != nil {
-			// Return error message indicating bad JSON from LLM
-			errorMsg := fmt.Sprintf("Error: Invalid JSON input for tool %s: %v. Raw Input: %s", toolName, err, toolCall.Function.Arguments)
-			// Log the error server-side if needed
-			fmt.Printf("WARN: invokeMCPTool JSON unmarshal failed for %s: %v\n", toolName, err)
-			return errorMsg, nil // Return error message *as the result* for the LLM to see
-			// Alternatively, could return a specific error type here and handle it upstream
-			// return "", fmt.Errorf("invalid JSON input for tool %s: %w. Raw Input: %s", toolName, err, toolCall.Function.Arguments)
-		}
-	} else {
-		inputArgs = make(map[string]any) // Empty arguments if none provided
-	}
-
-	// Invoke the tool via the server interface
-	mcpResult, err := server.CallTool(ctx, toolName, inputArgs)
-	if err != nil {
-		errMsg := fmt.Sprintf("Error invoking MCP tool %s on server %s: %v", toolName, server.Name(), err)
-		// Log the error server-side
-		fmt.Printf("ERROR: %s\n", errMsg)
-		// Return error message *as the result* for the LLM to see
-		return fmt.Sprintf("Error running tool %s: %v", toolName, err), nil
-		// Alternatively, return a specific error type:
-		// return "", fmt.Errorf("%w: %s on server %s: %v", errMCPInvocationError, toolName, server.Name(), err)
-	}
-
-	// Format the result according to OpenAI expectations (string content)
-	// Mimics Python's logic: single item as JSON, multiple items as JSON array.
-	var toolOutput string
-	if len(mcpResult.Content) == 1 {
-		// Marshal the single content item directly
-		jsonBytes, err := json.Marshal(mcpResult.Content[0])
-		if err != nil {
-			toolOutput = fmt.Sprintf("Error formatting tool result for %s: %v", toolName, err)
-			fmt.Printf("WARN: Failed to marshal single MCP result item for %s: %v\n", toolName, err)
-		} else {
-			toolOutput = string(jsonBytes)
-		}
-	} else if len(mcpResult.Content) > 0 {
-		// Marshal the whole list of content items
-		jsonBytes, err := json.Marshal(mcpResult.Content)
-		if err != nil {
-			toolOutput = fmt.Sprintf("Error formatting tool result array for %s: %v", toolName, err)
-			fmt.Printf("WARN: Failed to marshal MCP result list for %s: %v\n", toolName, err)
-		} else {
-			toolOutput = string(jsonBytes)
-		}
-	} else {
-		// Handle empty content - maybe return an empty string or specific message?
-		toolOutput = "" // Or "Tool executed successfully with no output."
-	}
-
-	return toolOutput, nil
-}
-
-// --- Workflow Handler ---
-
-// mcpWorkflowState holds data passed between internal nodes of the WithMCP workflow.
-type mcpWorkflowState struct {
-	OriginalRequest    openai.ChatCompletionRequest
-	ModifiedRequest    openai.ChatCompletionRequest // Request potentially with tools added
-	FirstResponse      openai.ChatCompletionResponse
-	ToolResultMessages []openai.ChatCompletionMessage // Messages generated from tool calls
-	NeedsSecondCall    bool
-	Error              error // To propagate errors between internal nodes
-}
-
-// mcpWorkflowHandler defines the logic for the WithMCP middleware.
+// mcpWorkflowHandler defines the core logic for the WithMCP middleware using heart nodes,
+// supporting multiple rounds of tool calls within a loop, mirroring openai-agent-sdk default behavior.
+// It orchestrates the flow: List Tools -> (Loop: LLM Call -> Process Response -> Maybe Call Tools -> Update History).
 func mcpWorkflowHandler(
-	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
-	servers []server.MCPServer,
+	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse], // The wrapped LLM call node definition
+	listToolsNodeDef heart.NodeDefinition[struct{}, internal.ListToolsResult], // Definition for listing tools
+	callToolNodeDef heart.NodeDefinition[internal.CallToolInput, internal.CallToolOutput], // Definition for calling a tool
 ) heart.WorkflowHandlerFunc[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
+	// This is the function that will be executed declaratively when the workflow node runs.
 	return func(ctx heart.Context, originalReq openai.ChatCompletionRequest) heart.ExecutionHandle[openai.ChatCompletionResponse] {
 
-		// --- Node 1: Get MCP Tools ---
-		getToolsNodeID := heart.NodeID("get_mcp_tools")
-		getToolsNode := heart.NewNode(ctx, getToolsNodeID,
-			func(toolsCtx heart.NewNodeContext) heart.ExecutionHandle[[]openai.FunctionDefinition] {
-				var allFuncs []openai.FunctionDefinition
-				toolNameToServer := make(map[string]server.MCPServer) // For duplicate check and invocation lookup
-				var wg sync.WaitGroup
-				var mu sync.Mutex
-				var errs []error
+		// --- Step 1: Start Listing Available MCP Tools (outside the loop) ---
+		listToolsHandle := listToolsNodeDef.Start(heart.Into(struct{}{}))
 
-				if len(servers) == 0 {
-					return heart.Into(allFuncs) // No servers, no tools
+		// --- Step 2: Define the Main Tool Interaction Loop Node ---
+		loopHandle := heart.NewNode(ctx, heart.NodeID("mcp_tool_loop"),
+			func(loopCtx heart.NewNodeContext) heart.ExecutionHandle[openai.ChatCompletionResponse] {
+
+				// --- Get Tool List Result (needed for potentially every LLM call & all tool calls) ---
+				toolsFuture := heart.FanIn(loopCtx, listToolsHandle)
+				toolsResult, toolsErr := toolsFuture.Get() // Wait for listToolsHandle to complete
+
+				// Handle potential errors from the heart framework executing listToolsHandle
+				if toolsErr != nil {
+					err := fmt.Errorf("failed to get MCP tool list result: %w", toolsErr)
+					return heart.IntoError[openai.ChatCompletionResponse](err)
+				}
+				// Handle errors reported *by* the listTools node's internal logic
+				if toolsResult.Error != nil {
+					err := fmt.Errorf("error listing MCP tools: %w", toolsResult.Error)
+					return heart.IntoError[openai.ChatCompletionResponse](err)
+				}
+				// Check if the necessary MCPToolsResult map exists if tools were found
+				mcpToolsAvailable := len(toolsResult.OpenAITools) > 0
+				if mcpToolsAvailable && toolsResult.MCPToolsResult == nil {
+					err := errors.New("internal error: MCPToolsResult map is nil after successful ListTools execution which found tools")
+					return heart.IntoError[openai.ChatCompletionResponse](err)
 				}
 
-				resultsChan := make(chan []heart.MCPTool, len(servers))
-				errChan := make(chan error, len(servers))
+				// --- Loop Initialization ---
+				currentMessages := originalReq.Messages        // Start with the initial message history
+				var lastResponse openai.ChatCompletionResponse // To store the final response
+				toolsHaveBeenCalled := false                   // Track if tools have been invoked in this run
 
-				for _, server := range servers {
-					wg.Add(1)
-					go func(s server.MCPServer) {
-						defer wg.Done()
-						// Use toolsCtx.Context which contains the cancellable context.Context
-						serverTools, err := s.ListTools(toolsCtx.Context)
-						if err != nil {
-							errChan <- fmt.Errorf("failed to list tools from MCP server '%s': %w", s.Name(), err)
-							return
-						}
-						resultsChan <- serverTools
-					}(server)
-				}
+				// --- The Tool Interaction Loop ---
+				for iter := 0; iter < maxToolIterations; iter++ {
 
-				go func() {
-					wg.Wait()
-					close(resultsChan)
-					close(errChan)
-				}()
+					// --- Prepare LLM Request for this iteration ---
+					iterReq := originalReq // Start with original request settings (model, temp, etc.)
+					iterReq.Messages = make([]openai.ChatCompletionMessage, len(currentMessages))
+					copy(iterReq.Messages, currentMessages) // Use the current message history (important: use a copy)
 
-				// Collect results and errors
-				serverIndex := 0 // Keep track for associating tools back to servers if needed later
-				serverToolsList := make([][]heart.MCPTool, len(servers))
-				for tools := range resultsChan {
-					// It's safer to store results associated with their server if order isn't guaranteed
-					// For now, we just collect them. A map[string][]MCPTool might be better.
-					if serverIndex < len(servers) {
-						serverToolsList[serverIndex] = tools
-						serverIndex++
+					// --- Tool List Handling: Always include available tools ---
+					// Start with tools from the original request, if any.
+					iterReq.Tools = nil // Reset for this iteration before appending
+					if len(originalReq.Tools) > 0 {
+						iterReq.Tools = append(iterReq.Tools, originalReq.Tools...)
+					}
+					// Append discovered MCP tools if they exist.
+					if mcpToolsAvailable {
+						iterReq.Tools = append(iterReq.Tools, toolsResult.OpenAITools...)
+					}
+
+					// --- ToolChoice Handling (Conditional Reset) ---
+					if toolsHaveBeenCalled {
+						// If tools were invoked previously in this run, reset ToolChoice to nil.
+						// This allows the model to decide ("auto" mode) based on the tool results.
+						iterReq.ToolChoice = nil
 					} else {
-						// This case shouldn't happen with the current setup, but good to guard
-						mu.Lock()
-						errs = append(errs, errors.New("received more tool results than servers"))
-						mu.Unlock()
-					}
-				}
-				for err := range errChan {
-					mu.Lock()
-					errs = append(errs, err)
-					mu.Unlock()
-				}
+						// Tools have not been called yet in this run. Apply original/derived logic.
+						// Check if the original ToolChoice was specific.
+						toolChoiceIsSpecific := false
+						toolChoiceStr, isString := originalReq.ToolChoice.(string)
+						if isString {
+							// Treat "auto", "required", or other valid/invalid strings as specific intent already set by user.
+							if toolChoiceStr != "none" && toolChoiceStr != "" {
+								toolChoiceIsSpecific = true
+							}
+						} else if originalReq.ToolChoice != nil {
+							// If it's not a string but also not nil, assume it's the specific *openai.ToolChoice struct.
+							toolChoiceIsSpecific = true
+						}
 
-				if len(errs) > 0 {
-					// Combine errors or return the first one
-					combinedErr := fmt.Errorf("errors fetching MCP tools: %v", errs)
-					return heart.IntoError[[]openai.FunctionDefinition](combinedErr)
-				}
-
-				// Process collected tools, check duplicates, and convert
-				serverIndex = 0 // Reset index for mapping
-				for _, serverTools := range serverToolsList {
-					server := servers[serverIndex] // Assumes order is maintained or mapped correctly
-					for _, mcpTool := range serverTools {
-						mu.Lock()
-						if existingServer, exists := toolNameToServer[mcpTool.Name]; exists {
-							errs = append(errs, fmt.Errorf("duplicate tool name '%s' found on servers '%s' and '%s'", mcpTool.Name, existingServer.Name(), server.Name()))
+						if mcpToolsAvailable && !toolChoiceIsSpecific {
+							// If MCP tools were added AND the original choice wasn't specific (nil or "none"),
+							// default to "auto".
+							iterReq.ToolChoice = "auto"
 						} else {
-							funcDef, err := mcpToolToOpenAIFunction(mcpTool)
-							if err != nil {
-								errs = append(errs, fmt.Errorf("failed to convert MCP tool '%s' from server '%s': %w", mcpTool.Name, server.Name(), err))
-							} else {
-								allFuncs = append(allFuncs, funcDef)
-								toolNameToServer[mcpTool.Name] = server // Store mapping
-							}
-						}
-						mu.Unlock()
-					}
-					serverIndex++
-				}
-
-				if len(errs) > 0 {
-					combinedErr := fmt.Errorf("errors processing MCP tools: %v", errs)
-					return heart.IntoError[[]openai.FunctionDefinition](combinedErr)
-				}
-
-				// Store the server map in the context for the next node? No, pass via closure or intermediate result.
-				// For now, just return the function definitions. The map will be recreated or passed.
-				return heart.Into(allFuncs)
-			})
-
-		// --- Node 2: First LLM Call (potentially with tools) ---
-		firstCallNodeID := heart.NodeID("first_llm_call")
-		firstCallNode := heart.NewNode(ctx, firstCallNodeID,
-			func(callCtx heart.NewNodeContext) heart.ExecutionHandle[mcpWorkflowState] {
-				// Get tools from previous node
-				toolsFuture := heart.FanIn(callCtx, getToolsNode)
-				tools, err := toolsFuture.Get()
-				if err != nil {
-					return heart.IntoError[mcpWorkflowState](fmt.Errorf("failed dependencies for %s: %w", firstCallNodeID, err))
-				}
-
-				state := mcpWorkflowState{
-					OriginalRequest: originalReq,
-					NeedsSecondCall: false, // Default
-				}
-				state.ModifiedRequest = originalReq // Start with original
-
-				// Add tools to the request if any were found
-				if len(tools) > 0 {
-					state.ModifiedRequest.Tools = make([]openai.Tool, len(tools))
-					for i, f := range tools {
-						state.ModifiedRequest.Tools[i] = openai.Tool{
-							Type:     openai.ToolTypeFunction,
-							Function: f, // Already FunctionDefinition type
+							// Otherwise, retain the original tool choice (which might be nil, "none", "auto", "required", or specific).
+							iterReq.ToolChoice = originalReq.ToolChoice
 						}
 					}
-				}
 
-				// Execute the wrapped LLM node definition
-				llmHandle := nextNodeDef.Start(heart.Into(state.ModifiedRequest))
-				responseFuture := heart.FanIn(callCtx, llmHandle)
-				response, err := responseFuture.Get()
-				if err != nil {
-					state.Error = fmt.Errorf("first LLM call failed for %s: %w", firstCallNodeID, err)
-					// Return state with error, not using IntoError directly here
-					return heart.Into(state)
-				}
-				state.FirstResponse = response
-
-				return heart.Into(state) // Pass state containing the first response
-			})
-
-		// --- Node 3: Process Response and Invoke Tools (if necessary) ---
-		processNodeID := heart.NodeID("process_and_invoke")
-		processNode := heart.NewNode(ctx, processNodeID,
-			func(processCtx heart.NewNodeContext) heart.ExecutionHandle[mcpWorkflowState] {
-				// Get state from the first LLM call
-				stateFuture := heart.FanIn(processCtx, firstCallNode)
-				state, err := stateFuture.Get()
-				if err != nil {
-					// Error occurred during first call or its dependencies
-					return heart.IntoError[mcpWorkflowState](fmt.Errorf("failed dependencies for %s: %w", processNodeID, err))
-				}
-				// If state itself contains an error from the first call node, propagate it
-				if state.Error != nil {
-					return heart.Into(state) // Pass the state containing the error
-				}
-
-				// Check for tool calls in the response
-				if len(state.FirstResponse.Choices) == 0 || state.FirstResponse.Choices[0].Message.ToolCalls == nil {
-					// No tool calls, the first response is the final one
-					state.NeedsSecondCall = false
-					return heart.Into(state)
-				}
-
-				// Tool calls exist, need to invoke them
-				state.NeedsSecondCall = true
-				toolCalls := state.FirstResponse.Choices[0].Message.ToolCalls
-				state.ToolResultMessages = make([]openai.ChatCompletionMessage, 0, len(toolCalls))
-
-				// Recreate tool name to server map (or pass it differently if performance matters)
-				toolNameToServer := make(map[string]server.MCPServer)
-				var toolFetchWg sync.WaitGroup
-				var toolFetchErr error
-				toolFetchWg.Add(1)
-				go func() { // Fetch tools again to build the map - less efficient but simpler for now
-					defer toolFetchWg.Done()
-					var mu sync.Mutex // Mutex for map access within this goroutine
-					var wg sync.WaitGroup
-					errChan := make(chan error, len(servers))
-					for _, server := range servers {
-						wg.Add(1)
-						go func(s server.MCPServer) {
-							defer wg.Done()
-							serverTools, err := s.ListTools(processCtx.Context)
-							if err != nil {
-								errChan <- fmt.Errorf("process_and_invoke: failed list tools for %s: %w", s.Name(), err)
-								return
-							}
-							mu.Lock()
-							for _, tool := range serverTools {
-								// Could check for duplicates again, but getToolsNode should have caught it
-								toolNameToServer[tool.Name] = s
-							}
-							mu.Unlock()
-						}(server)
-					}
-					wg.Wait()
-					close(errChan)
-					// Collect errors
-					for err := range errChan {
-						if toolFetchErr == nil {
-							toolFetchErr = err
-						} // Store first error
-					}
-				}()
-				toolFetchWg.Wait() // Wait for map population
-
-				if toolFetchErr != nil {
-					state.Error = fmt.Errorf("failed to rebuild tool map in %s: %w", processNodeID, toolFetchErr)
-					return heart.Into(state)
-				}
-
-				// --- Invoke tools sequentially for simplicity, could parallelize ---
-				invocationErrors := []string{}
-				for _, toolCall := range toolCalls {
-					// Use processCtx.Context which contains the cancellable context.Context
-					resultContent, invokeErr := invokeMCPTool(processCtx.Context, toolCall, servers, toolNameToServer)
-					if invokeErr != nil {
-						// This indicates a framework/setup error, not a tool execution error shown to LLM
-						invocationErrors = append(invocationErrors, fmt.Sprintf("framework error invoking tool %s (ID: %s): %v", toolCall.Function.Name, toolCall.ID, invokeErr))
-						// Continue processing other tools? Or fail fast? Let's collect errors for now.
-						// We still need to provide *some* result message back to the LLM.
-						resultContent = fmt.Sprintf("Error: Failed to invoke tool %s due to internal error.", toolCall.Function.Name)
+					// Ensure ToolChoice is nil if no tools are actually available.
+					if len(iterReq.Tools) == 0 {
+						iterReq.ToolChoice = nil
 					}
 
-					// Create the tool result message for the *next* LLM call
-					state.ToolResultMessages = append(state.ToolResultMessages, openai.ChatCompletionMessage{
-						Role:       openai.ChatMessageRoleTool,
-						Content:    resultContent, // Content is the string result from invokeMCPTool
-						ToolCallID: toolCall.ID,   // Link result back to the call
-						// Name is deprecated/optional for tool role messages in some versions
-					})
-				}
+					// --- Execute LLM Call for this iteration ---
+					llmHandle := nextNodeDef.Start(heart.Into(iterReq)) // Use loopCtx implicitly
+					llmFuture := heart.FanIn(loopCtx, llmHandle)
+					llmResponse, llmErr := llmFuture.Get() // Wait for this LLM call
 
-				if len(invocationErrors) > 0 {
-					state.Error = fmt.Errorf("errors occurred during MCP tool invocation: %s", strings.Join(invocationErrors, "; "))
-					// Even with errors, we have ToolResultMessages (containing error strings), so proceed to second call
-				}
+					if llmErr != nil {
+						err := fmt.Errorf("LLM call failed on iteration %d within MCP loop: %w", iter, llmErr)
+						return heart.IntoError[openai.ChatCompletionResponse](err)
+					}
 
-				return heart.Into(state) // Return state with ToolResultMessages populated
-			})
+					lastResponse = llmResponse // Store this response
 
-		// --- Node 4: Second LLM Call (conditional) ---
-		secondCallNodeID := heart.NodeID("second_llm_call")
-		secondCallNode := heart.NewNode(ctx, secondCallNodeID,
-			func(callCtx heart.NewNodeContext) heart.ExecutionHandle[openai.ChatCompletionResponse] {
-				// Get state from the processing node
-				stateFuture := heart.FanIn(callCtx, processNode)
-				state, err := stateFuture.Get()
-				if err != nil {
-					return heart.IntoError[openai.ChatCompletionResponse](fmt.Errorf("failed dependencies for %s: %w", secondCallNodeID, err))
-				}
-				// If state itself contains an error from previous steps, propagate it
-				if state.Error != nil {
-					// Construct a response indicating the error? Or just fail?
-					// Let's fail the workflow clearly.
-					return heart.IntoError[openai.ChatCompletionResponse](fmt.Errorf("error before second LLM call in %s: %w", secondCallNodeID, state.Error))
-				}
+					// --- Check if Tool Calls are present in the response ---
+					toolCalls := []openai.ToolCall{} // Initialize empty slice
+					if len(llmResponse.Choices) > 0 && llmResponse.Choices[0].Message.ToolCalls != nil {
+						toolCalls = llmResponse.Choices[0].Message.ToolCalls
+					}
 
-				// Decide whether to make the second call
-				if !state.NeedsSecondCall {
-					// No second call needed, return the first response
-					return heart.Into(state.FirstResponse)
-				}
+					// --- Exit Condition: No Tool Calls Requested ---
+					if len(toolCalls) == 0 {
+						// The LLM did not request any tools, this is the final answer.
+						return heart.Into(lastResponse)
+					}
 
-				// --- Prepare request for the second call ---
-				secondReq := state.OriginalRequest // Start with the *original* request messages
+					// --- Tool Calls Exist: Process and Invoke ---
 
-				// Append the first response's assistant message (containing the tool calls)
-				if len(state.FirstResponse.Choices) > 0 {
-					secondReq.Messages = append(secondReq.Messages, state.FirstResponse.Choices[0].Message)
-				}
+					// 1. Add the assistant's message (requesting tools) to the history
+					if len(llmResponse.Choices) > 0 { // Safety check
+						currentMessages = append(currentMessages, llmResponse.Choices[0].Message)
+					}
 
-				// Append the tool result messages
-				secondReq.Messages = append(secondReq.Messages, state.ToolResultMessages...)
+					// --- Invoke Tools in Parallel --- (Using the *same* listTools result from before the loop)
+					// [Existing tool invocation logic remains the same]
+					toolCallFutures := make([]*heart.Future[internal.CallToolOutput], len(toolCalls))
+					for i, toolCall := range toolCalls {
+						if toolCall.Type != openai.ToolTypeFunction || toolCall.Function.Name == "" {
+							err := fmt.Errorf("invalid tool call from LLM on iteration %d: type=%s, id=%s, function_name=%s", iter, toolCall.Type, toolCall.ID, toolCall.Function.Name)
+							errorHandle := heart.IntoError[internal.CallToolOutput](err)
+							toolCallFutures[i] = heart.FanIn(loopCtx, errorHandle)
+							continue
+						}
+						// We still need MCPToolsResult map, guaranteed to exist if mcpToolsAvailable was true
+						if !mcpToolsAvailable {
+							// Should not happen if toolCalls were generated based on MCP tools, but defensive check.
+							err := fmt.Errorf("LLM requested MCP tool '%s' but no MCP tools were initially listed", toolCall.Function.Name)
+							errorHandle := heart.IntoError[internal.CallToolOutput](err)
+							toolCallFutures[i] = heart.FanIn(loopCtx, errorHandle)
+							continue
+						}
+						callInput := internal.CallToolInput{
+							ToolCall:       toolCall,
+							MCPToolsResult: toolsResult.MCPToolsResult,
+						}
+						callHandle := callToolNodeDef.Start(heart.Into(callInput))
+						toolCallFutures[i] = heart.FanIn(loopCtx, callHandle)
+					}
 
-				// Crucially, REMOVE tools definition for the second call,
-				// unless you specifically want the LLM to call tools *again* based on the first tool results.
-				// Standard pattern is to let the LLM synthesize a final response after getting tool results.
-				secondReq.Tools = nil
-				secondReq.ToolChoice = nil // Reset tool choice as well
+					// --- Collect Tool Results ---
+					// [Existing tool result collection logic remains the same]
+					toolMessages := make([]openai.ChatCompletionMessage, 0, len(toolCalls))
+					for i, future := range toolCallFutures {
+						callOutput, callErr := future.Get()        // Wait for the i-th tool call
+						toolCallID := toolCalls[i].ID              // Original Tool Call ID
+						toolCallName := toolCalls[i].Function.Name // Original Tool Call Name
 
-				// --- Execute the second LLM call ---
-				llmHandle := nextNodeDef.Start(heart.Into(secondReq))
-				responseFuture := heart.FanIn(callCtx, llmHandle)
-				finalResponse, err := responseFuture.Get()
-				if err != nil {
-					return heart.IntoError[openai.ChatCompletionResponse](fmt.Errorf("second LLM call failed for %s: %w", secondCallNodeID, err))
-				}
+						if callErr != nil {
+							toolMessages = append(toolMessages, openai.ChatCompletionMessage{
+								Role:       openai.ChatMessageRoleTool,
+								Content:    fmt.Sprintf("Error: Failed to invoke tool %s due to internal framework/node error.", toolCallName),
+								ToolCallID: toolCallID,
+							})
+							continue
+						}
+						if callOutput.Error != nil {
+							errorContent := fmt.Sprintf("Error executing tool %s: %s", toolCallName, callOutput.Error.Error())
+							toolMessages = append(toolMessages, openai.ChatCompletionMessage{
+								Role:       openai.ChatMessageRoleTool,
+								Content:    errorContent,
+								ToolCallID: toolCallID,
+								Name:       toolCallName,
+							})
+							continue
+						}
+						// Success: Append the result message
+						if callOutput.ResultMsg.ToolCallID != toolCallID {
+							fmt.Printf("WARN: ToolCallID mismatch in CallToolOutput for tool '%s' on iter %d. Expected '%s', got '%s'\n", toolCallName, iter, toolCallID, callOutput.ResultMsg.ToolCallID)
+							callOutput.ResultMsg.ToolCallID = toolCallID // Correct it
+						}
+						callOutput.ResultMsg.Role = openai.ChatMessageRoleTool // Ensure role
+						toolMessages = append(toolMessages, callOutput.ResultMsg)
+					}
 
-				// Return the final response from the second call
-				return heart.Into(finalResponse)
-			})
+					// 2. Add the tool results/errors to the message history
+					currentMessages = append(currentMessages, toolMessages...)
 
-		// Return the handle to the last node in the chain
-		return secondCallNode
+					// 3. *** Mark that tools have now been called in this run ***
+					// This will affect ToolChoice in the *next* iteration.
+					toolsHaveBeenCalled = true
+
+					// 4. Log invocation errors if any, but continue the loop
+					// if len(invocationErrors) > 0 {
+					// 	fmt.Printf("WARN: MCP middleware encountered errors invoking tools on iteration %d for node '%s': %s\n",
+					// 		iter, loopCtx.BasePath, strings.Join(invocationErrors, "; "))
+					// }
+
+					// Loop continues...
+
+				} // --- End of for loop ---
+
+				// --- Exit Condition: Max Iterations Reached ---
+				return heart.IntoError[openai.ChatCompletionResponse](errMaxIterationsReached) // Return the last thing the LLM said
+
+			}) // End NewNode function definition
+
+		// Return the handle for the loop node.
+		return loopHandle
 	}
 }
 
-// WithMCP creates a NodeDefinition that wraps an existing OpenAI ChatCompletion node
-// definition, adding support for discovering and invoking tools via the Model Controller Protocol (MCP).
-//
-// It fetches tools from the provided MCPServers, adds them to the initial LLM request.
-// If the LLM response includes tool calls for these MCP tools, it invokes them via the
-// respective MCPServer and sends the results back to the LLM in a subsequent call
-// to get the final response.
-//
-// Parameters:
-//   - nodeID: A unique identifier for this middleware workflow instance.
-//   - nextNodeDef: The heart.NodeDefinition of the underlying OpenAI CreateChatCompletion node to wrap.
-//   - servers: A slice of server.MCPServer instances from which to fetch and invoke tools.
-//
-// Returns:
-//
-//	A heart.NodeDefinition that behaves like an OpenAI ChatCompletion node but includes
-//	the MCP tool interaction logic. Its input is openai.ChatCompletionRequest and
-//	output is openai.ChatCompletionResponse.
+// WithMCP function remains the same.
 func WithMCP(
 	nodeID heart.NodeID,
 	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
-	servers []server.MCPServer,
 ) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
 	if nodeID == "" {
 		panic("WithMCP requires a non-empty nodeID")
@@ -469,18 +248,14 @@ func WithMCP(
 	if nextNodeDef == nil {
 		panic("WithMCP requires a non-nil nextNodeDef")
 	}
-	// Servers slice can be empty, which means no tools will be added.
 
-	// Generate the handler function, capturing the nextNodeDef and servers.
-	handler := mcpWorkflowHandler(nextNodeDef, servers)
+	// Define the internal node *blueprints* needed by the workflow handler ONCE.
+	listToolsNodeDef := internal.DefineListToolsNode(heart.NodeID(string(nodeID) + "_listTools"))
+	callToolNodeDef := internal.DefineCallToolNode(heart.NodeID(string(nodeID) + "_callTool"))
 
-	// Create a workflow resolver. Use a specific type ID for this middleware pattern.
-	workflowResolver := heart.NewWorkflowResolver(nodeID, handler) // Use user-provided nodeID for the instance
+	// Create the specific workflow handler function, capturing the necessary node definitions.
+	handler := mcpWorkflowHandler(nextNodeDef, listToolsNodeDef, callToolNodeDef)
 
-	// Define and return the NodeDefinition for this workflow.
-	return heart.DefineNode(
-		nodeID,           // Use the user-provided nodeID for the definition instance
-		workflowResolver, // The resolver containing the workflow logic
-	)
+	// Create and return the workflow definition for this middleware instance.
+	return heart.WorkflowFromFunc(nodeID, handler)
 }
-*/

@@ -15,7 +15,7 @@ const createChatCompletionNodeTypeID heart.NodeTypeID = "openai:createChatComple
 // It no longer requires heart.Context during definition.
 func CreateChatCompletion(nodeID heart.NodeID) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
 	// Call the updated DefineNode which only takes nodeID and the resolver.
-	return heart.DefineNode[openai.ChatCompletionRequest, openai.ChatCompletionResponse](nodeID, &createChatCompletion{})
+	return heart.DefineNode(nodeID, &createChatCompletion{})
 }
 
 // createChatCompletionInitializer handles dependency injection for the chat completion node.
