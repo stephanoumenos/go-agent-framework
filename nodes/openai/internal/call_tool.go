@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"heart"
+	"strings"
 
-	// Corrected import path for MCPClient
 	"github.com/mark3labs/mcp-go/client"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -19,8 +19,7 @@ import (
 const CallToolNodeTypeID heart.NodeTypeID = "openai_mcp_middleware:callTool"
 
 var (
-	errMCPToolDefinitionNotFound = errors.New("MCP tool definition not found in provided list")
-	errUnsupportedToolCallType   = errors.New("unsupported tool call type in response")
+	errUnsupportedToolCallType = errors.New("unsupported tool call type in response")
 )
 
 // callToolInput holds the necessary data to invoke a single MCP tool.
@@ -67,38 +66,93 @@ func (r *callToolResolver) Init() heart.NodeInitializer {
 	return r.initializer
 }
 
-// formatToolResult formats the MCP tool result (or error) into a string for the LLM.
+// formatToolResult formats the MCP tool result (or error) into a plain string for the LLM.
 func formatToolResult(toolName string, result *mcp.CallToolResult, callErr error) string {
 	if callErr != nil {
-		// This is an error during the execution *of the tool itself* (e.g., invalid input).
-		// Format this error message to be sent back to the LLM.
-		errMsg := fmt.Sprintf("Error running tool %s: %v", toolName, callErr)
-		fmt.Printf("INFO: Tool execution failed for %s: %v\n", toolName, callErr) // Log locally
+		// This is an error during the MCP call *itself* (network, server unavailable, etc.)
+		// OR an error reported by the tool execution framework on the server side.
+		errMsg := fmt.Sprintf("Error invoking or executing tool %s: %v", toolName, callErr)
+		fmt.Printf("ERROR: MCP call/execution failed for %s: %v\n", toolName, callErr)
 		return errMsg
 	}
 
+	// Check if the result object itself indicates an error reported *by the tool's logic*
+	if result != nil && result.IsError {
+		// Tool ran but reported failure. Format the content as the error message.
+		// If content is empty, provide a generic error message based on IsError.
+		if len(result.Content) == 0 {
+			fmt.Printf("WARN: Tool %s reported IsError=true but provided no content details.\n", toolName)
+			return fmt.Sprintf("Tool %s reported an error.", toolName) // Simple error message for LLM
+		}
+		// Proceed to format content below - it likely contains the tool's error description.
+		fmt.Printf("INFO: Tool %s reported IsError=true. Formatting content as error details.\n", toolName)
+	}
+
+	// Handle case where the call was successful (callErr == nil and !result.IsError) but no content was returned.
 	if result == nil || len(result.Content) == 0 {
-		return "" // Or "Tool executed successfully with no output."
+		// This case might occur if IsError was true but Content was empty (handled above),
+		// or if the call was successful but genuinely returned no content.
+		if result != nil && result.IsError {
+			// Already handled above, but defensive return
+			return fmt.Sprintf("Tool %s reported an error.", toolName)
+		}
+		fmt.Printf("INFO: Tool %s executed successfully with no output content.\n", toolName)
+		return fmt.Sprintf("Tool %s executed successfully with no output.", toolName) // Indicate success without output
 	}
 
-	// Format the result content (mimics original python logic)
-	var toolOutput string
-	var marshalErr error
-	var jsonBytes []byte
+	// --- Process Content using Type Switch ---
+	var textParts []string
+	hasNonText := false
 
-	if len(result.Content) == 1 {
-		jsonBytes, marshalErr = json.Marshal(result.Content[0])
+	for i, item := range result.Content {
+		// Use a type switch to check the actual underlying type of the Content interface item
+		switch v := item.(type) {
+		case mcp.TextContent: // <<<=== ADJUST THIS TYPE NAME IF NEEDED (e.g., mcpschema.TextContent)
+			// Successfully identified as TextContent
+			textParts = append(textParts, v.Text) // Access the Text field from TextContent
+		// Add cases for other expected content types if you need specific handling:
+		// case mcp.ImageContent:
+		//     hasNonText = true
+		//     // Example: Append a placeholder or description
+		//     textParts = append(textParts, fmt.Sprintf("[Image Content received: %s]", v.Description))
+		default:
+			// Handle unknown or unsupported content types
+			hasNonText = true
+			contentType := fmt.Sprintf("%T", v) // Get the type name
+			fmt.Printf("WARN: Unsupported content type '%s' at index %d for tool %s.\n", contentType, i, toolName)
+
+			// Fallback: Try to marshal the unknown item to JSON to see what it is
+			jsonBytes, marshalErr := json.Marshal(v)
+			if marshalErr != nil {
+				textParts = append(textParts, fmt.Sprintf("[Unsupported Content Type: %s - Error marshaling: %v]", contentType, marshalErr))
+			} else {
+				textParts = append(textParts, fmt.Sprintf("[Unsupported Content Type: %s - Data: %s]", contentType, string(jsonBytes)))
+			}
+		}
+	}
+
+	if len(textParts) == 0 {
+		// This could happen if all content items were of unsupported types that didn't even marshal.
+		fmt.Printf("WARN: Tool %s produced content, but no text parts found or successfully formatted.\n", toolName)
+		return fmt.Sprintf("[Tool %s produced content, but no readable text was extracted]", toolName)
+	}
+
+	// Join the extracted/formatted text parts
+	finalContent := strings.Join(textParts, "\n") // Use newline as a separator
+
+	// Log summary
+	if hasNonText {
+		fmt.Printf("INFO: Processed content for tool %s (included non-text/unsupported items). Final formatted output length: %d\n", toolName, len(finalContent))
 	} else {
-		jsonBytes, marshalErr = json.Marshal(result.Content)
+		fmt.Printf("INFO: Successfully formatted text content for tool %s. Final output length: %d\n", toolName, len(finalContent))
 	}
 
-	if marshalErr != nil {
-		toolOutput = fmt.Sprintf("Error formatting tool result for %s: %v", toolName, marshalErr)
-		fmt.Printf("WARN: Failed to marshal MCP result content for %s: %v\n", toolName, marshalErr)
-	} else {
-		toolOutput = string(jsonBytes)
+	// If the result indicated an error, prepend a note for clarity? Optional.
+	if result.IsError {
+		return fmt.Sprintf("Error reported by tool %s: %s", toolName, finalContent)
 	}
-	return toolOutput
+
+	return finalContent
 }
 
 // Get calls a specific MCP tool based on the input.
@@ -117,18 +171,13 @@ func (r *callToolResolver) Get(ctx context.Context, in CallToolInput) (CallToolO
 	toolName := in.ToolCall.Function.Name
 	toolCallID := in.ToolCall.ID
 
-	// Find the MCP tool definition (optional, but good for validation if needed)
-	// For now, we assume the tool exists as the LLM called it.
-	// We primarily need the client to make the call.
-
-	// Parse arguments
-	var inputArgs map[string]interface{} // Use interface{} as per mcp.CallToolRequest
+	// Parse arguments (error handling remains the same)
+	var inputArgs map[string]interface{}
 	rawArgs := in.ToolCall.Function.Arguments
 	if rawArgs != "" {
 		err := json.Unmarshal([]byte(rawArgs), &inputArgs)
 		if err != nil {
-			// Argument parsing failed. This is an error *from* the LLM.
-			// Report it back as the content of the tool message.
+			// Argument parsing failed (LLM error). Report back in content.
 			errorMsg := fmt.Sprintf("Error: Invalid JSON arguments provided for tool %s: %v. Raw Arguments: %s", toolName, err, rawArgs)
 			fmt.Printf("WARN: Invalid JSON arguments from LLM for tool %s: %v\n", toolName, err)
 			resultMsg := openai.ChatCompletionMessage{
@@ -136,19 +185,16 @@ func (r *callToolResolver) Get(ctx context.Context, in CallToolInput) (CallToolO
 				Content:    errorMsg,
 				ToolCallID: toolCallID,
 			}
-			// No framework error here, return the message
-			return CallToolOutput{ResultMsg: resultMsg}, nil
+			return CallToolOutput{ResultMsg: resultMsg}, nil // No framework error
 		}
 	} else {
-		inputArgs = make(map[string]interface{}) // Empty args if none provided
+		inputArgs = make(map[string]interface{}) // Empty args
 	}
 
-	// Prepare MCP CallToolRequest - **FIXED INITIALIZATION**
+	// Prepare MCP CallToolRequest (remains the same)
 	mcpReq := mcp.CallToolRequest{
-		Request: mcp.Request{ // Initialize embedded Request struct if needed (e.g., method)
-			Method: "tool/call", // Set appropriate method name
-		},
-		Params: struct { // Initialize nested Params struct
+		Request: mcp.Request{Method: "tool/call"}, // Ensure method is set if needed by client impl
+		Params: struct {
 			Name      string                 `json:"name"`
 			Arguments map[string]interface{} `json:"arguments,omitempty"`
 			Meta      *struct {
@@ -157,29 +203,27 @@ func (r *callToolResolver) Get(ctx context.Context, in CallToolInput) (CallToolO
 		}{
 			Name:      toolName,
 			Arguments: inputArgs,
-			// Meta: nil, // Explicitly nil or omit if not needed
 		},
 	}
 
 	// Invoke the tool via the MCPClient interface
+	// invokeErr captures errors *during* the MCP call or tool execution framework (e.g., tool not found, server error)
+	// mcpResult contains the tool's output *or* an error reported by the tool's logic (IsError=true)
 	mcpResult, invokeErr := r.initializer.client.CallTool(ctx, mcpReq)
-	// Note: invokeErr here represents errors *executing* the tool on the server,
-	// including invalid inputs reported by the server, or server-side execution errors.
 
-	// Format the result (or invokeErr) into the string content for the LLM
+	// Format the result (or invokeErr, or IsError within mcpResult) into the string content for the LLM
 	resultContent := formatToolResult(toolName, mcpResult, invokeErr)
 
 	// Create the message for the next LLM call
 	resultMsg := openai.ChatCompletionMessage{
 		Role:       openai.ChatMessageRoleTool,
-		Content:    resultContent,
+		Content:    resultContent, // Use the properly formatted plain text (or error)
 		ToolCallID: toolCallID,
 	}
 
-	// If invokeErr occurred, we've formatted it into resultContent.
-	// We don't return invokeErr as the *node's* error, because the node itself
-	// succeeded in calling the client and getting a response (even if that response was an error).
-	// Framework errors (like DI not set, bad tool type) are returned as the node's error.
+	// The node succeeded if it could call the client and get a result/error back.
+	// Tool execution errors (invokeErr or result.IsError) are handled by formatToolResult
+	// and put into the resultMsg.Content, not returned as the node's error.
 	return CallToolOutput{ResultMsg: resultMsg}, nil
 }
 

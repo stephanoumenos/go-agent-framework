@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"heart" // Assuming 'heart' is your main package directory relative to GOPATH/module
+	"heart"
 	"heart/mcp"
 	"heart/nodes/openai"
 	openaimw "heart/nodes/openai/middleware"
 	"heart/store"
 	"log" // Added for server logging if needed
 
-	// Import http for handler type check and client usage
 	"net/http/httptest"
 	"os"
 	"strconv"
@@ -184,25 +183,26 @@ func main() {
 	fmt.Printf("MCP Server (via SSE wrapper) running locally at: %s\n", testServer.URL)
 
 	// --- Setup Clients ---
-	// CORRECTED: Use NewSSEMCPClient as per the provided documentation
-	mcpClient, err := mcpclient.NewSSEMCPClient(testServer.URL) // Pass the test server's URL
+	// Construct the full SSE endpoint URL
+	sseEndpointURL := testServer.URL + sseServer.CompleteSsePath() // Or often just testServer.URL + "/sse" if defaults are used
+	fmt.Printf("Attempting to connect SSE client to: %s\n", sseEndpointURL)
+
+	mcpClient, err := mcpclient.NewSSEMCPClient(sseEndpointURL) // Use the specific SSE endpoint URL
 	if err != nil {
 		log.Fatalf("Error creating MCP SSE client: %v", err)
 	}
+
 	// It's often necessary to start the SSE client's connection loop
 	// Use a cancellable context for the client's background processing
 	clientCtx, clientCancel := context.WithCancel(context.Background())
 	defer clientCancel() // Ensure client processing stops when main exits
 
 	// Start the client's background processing in a separate goroutine
-	go func() {
-		fmt.Println("Starting SSE Client background processing...")
-		if startErr := mcpClient.Start(clientCtx); startErr != nil && !errors.Is(startErr, context.Canceled) {
-			// Log non-cancel errors from the client
-			log.Printf("SSE Client error: %v", startErr)
-		}
-		fmt.Println("SSE Client background processing stopped.")
-	}()
+	fmt.Println("Starting SSE Client background processing...")
+	if startErr := mcpClient.Start(clientCtx); startErr != nil && !errors.Is(startErr, context.Canceled) {
+		// Log non-cancel errors from the client
+		log.Printf("SSE Client error: %v", startErr)
+	}
 
 	// Optional: Add a small delay or a more robust readiness check
 	// to ensure the client is connected before proceeding.
@@ -251,8 +251,11 @@ func main() {
 	fmt.Printf("\n--- Executing Workflow ---\nInput Prompt: \"%s\"\n", inputPrompt)
 
 	workflowHandle := mainWorkflowDef.Start(heart.Into(inputPrompt))
-	memStore := store.NewMemoryStore()
-	finalResult, err := heart.Execute(ctx, workflowHandle, heart.WithStore(memStore))
+	fileStore, err := store.NewFileStore("workflows")
+	if err != nil {
+		log.Fatalf("error setting up file store: %v", fileStore)
+	}
+	finalResult, err := heart.Execute(ctx, workflowHandle, heart.WithStore(fileStore))
 
 	fmt.Println("\n--- Workflow Execution Finished ---")
 
@@ -293,6 +296,3 @@ func main() {
 
 	fmt.Println("\n--- MCP Example Finished ---")
 }
-
-// --- Add missing imports if any ---
-// import "log" // Make sure log is imported

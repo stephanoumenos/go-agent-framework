@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"heart"
 	"heart/nodes/openai/internal"
+	"strings" // Added for potential use in future logging/formatting if needed
 
 	openai "github.com/sashabaranov/go-openai"
 	// MCP client interface is implicitly required via DI for internal nodes
@@ -17,7 +18,8 @@ var (
 
 const (
 	// maxToolIterations limits the number of LLM <-> Tool rounds to prevent infinite loops.
-	maxToolIterations = 10
+	// Reduced to 5 from default 10 for potentially faster debugging if it occurs.
+	maxToolIterations = 5
 )
 
 // mcpWorkflowHandler defines the core logic for the WithMCP middleware using heart nodes,
@@ -66,11 +68,13 @@ func mcpWorkflowHandler(
 
 				// --- The Tool Interaction Loop ---
 				for iter := 0; iter < maxToolIterations; iter++ {
+					fmt.Printf("--- MCP Loop Iteration %d Start ---\n", iter) // Mark iteration start
 
 					// --- Prepare LLM Request for this iteration ---
 					iterReq := originalReq // Start with original request settings (model, temp, etc.)
+					// Create a fresh slice for messages in this request
 					iterReq.Messages = make([]openai.ChatCompletionMessage, len(currentMessages))
-					copy(iterReq.Messages, currentMessages) // Use the current message history (important: use a copy)
+					copy(iterReq.Messages, currentMessages) // Use the current message history
 
 					// --- Tool List Handling: Always include available tools ---
 					// Start with tools from the original request, if any.
@@ -83,55 +87,107 @@ func mcpWorkflowHandler(
 						iterReq.Tools = append(iterReq.Tools, toolsResult.OpenAITools...)
 					}
 
-					// --- ToolChoice Handling (Conditional Reset) ---
+					// --- ToolChoice Handling ---
+					// Determine ToolChoice based on whether tools were called previously.
+					// Keep the logic simple: first call uses original/auto, subsequent calls use nil/auto.
 					if toolsHaveBeenCalled {
-						// If tools were invoked previously in this run, reset ToolChoice to nil.
-						// This allows the model to decide ("auto" mode) based on the tool results.
+						// If tools were invoked previously, let the model decide ("auto" mode) based on the tool results.
+						// Setting to nil typically defaults to "auto" in the API.
+						fmt.Printf("INFO: [MCP Loop Iter %d] Tools previously called, setting ToolChoice=nil (defaulting to auto).\n", iter)
 						iterReq.ToolChoice = nil
 					} else {
-						// Tools have not been called yet in this run. Apply original/derived logic.
-						// Check if the original ToolChoice was specific.
+						// First iteration or tools not called yet. Determine initial ToolChoice.
 						toolChoiceIsSpecific := false
 						toolChoiceStr, isString := originalReq.ToolChoice.(string)
 						if isString {
-							// Treat "auto", "required", or other valid/invalid strings as specific intent already set by user.
 							if toolChoiceStr != "none" && toolChoiceStr != "" {
 								toolChoiceIsSpecific = true
 							}
-						} else if originalReq.ToolChoice != nil {
-							// If it's not a string but also not nil, assume it's the specific *openai.ToolChoice struct.
+						} else if tc, ok := originalReq.ToolChoice.(*openai.ToolChoice); ok && tc != nil {
 							toolChoiceIsSpecific = true
 						}
 
-						if mcpToolsAvailable && !toolChoiceIsSpecific {
-							// If MCP tools were added AND the original choice wasn't specific (nil or "none"),
-							// default to "auto".
+						if toolChoiceIsSpecific {
+							fmt.Printf("INFO: [MCP Loop Iter %d] Using original specific ToolChoice: %+v\n", iter, originalReq.ToolChoice)
+							iterReq.ToolChoice = originalReq.ToolChoice
+						} else if len(iterReq.Tools) > 0 {
+							// Tools are available, and original choice wasn't specific, default to "auto".
+							fmt.Printf("INFO: [MCP Loop Iter %d] Tools available, ToolChoice not specific, defaulting to 'auto'.\n", iter)
 							iterReq.ToolChoice = "auto"
 						} else {
-							// Otherwise, retain the original tool choice (which might be nil, "none", "auto", "required", or specific).
-							iterReq.ToolChoice = originalReq.ToolChoice
+							// No tools and no specific choice.
+							fmt.Printf("INFO: [MCP Loop Iter %d] No tools available and ToolChoice not specific, setting to nil.\n", iter)
+							iterReq.ToolChoice = nil
 						}
 					}
 
-					// Ensure ToolChoice is nil if no tools are actually available.
+					// Final check: Ensure ToolChoice is nil if no tools ended up in the request.
 					if len(iterReq.Tools) == 0 {
-						iterReq.ToolChoice = nil
+						if iterReq.ToolChoice != nil {
+							fmt.Printf("WARN: [MCP Loop Iter %d] Overriding ToolChoice to nil because no tools are available.\n", iter)
+							iterReq.ToolChoice = nil
+						}
 					}
+					// --- End ToolChoice Handling ---
+
+					// Log the messages being sent for this iteration
+					fmt.Printf("DEBUG: [MCP Loop Iter %d] Sending %d messages to LLM:\n", iter, len(iterReq.Messages))
+					for msgIdx, msg := range iterReq.Messages {
+						// Basic logging to avoid excessive output if content is long
+						toolCallInfo := "None"
+						if len(msg.ToolCalls) > 0 {
+							toolCallInfo = fmt.Sprintf("%d calls", len(msg.ToolCalls))
+						}
+						fmt.Printf("  [%d] Role: %-9s ToolCallID: %-15s ToolCalls: %-10s Content: %.60s...\n",
+							msgIdx, msg.Role, msg.ToolCallID, toolCallInfo, strings.ReplaceAll(msg.Content, "\n", "\\n"))
+					}
+					fmt.Printf("DEBUG: [MCP Loop Iter %d] ToolChoice for LLM call: %+v\n", iter, iterReq.ToolChoice)
 
 					// --- Execute LLM Call for this iteration ---
 					llmHandle := nextNodeDef.Start(heart.Into(iterReq)) // Use loopCtx implicitly
 					llmFuture := heart.FanIn(loopCtx, llmHandle)
 					llmResponse, llmErr := llmFuture.Get() // Wait for this LLM call
 
+					// --- **** ADDED DEBUG LOGGING **** ---
+					fmt.Printf("DEBUG: [MCP Loop Iter %d] Received LLM Response.\n", iter)
 					if llmErr != nil {
-						err := fmt.Errorf("LLM call failed on iteration %d within MCP loop: %w", iter, llmErr)
+						// Log the framework error from the LLM node itself
+						fmt.Printf("ERROR: [MCP Loop Iter %d] LLM call node returned framework error: %v\n", iter, llmErr)
+						// Immediately wrap and return this framework error
+						err := fmt.Errorf("LLM call node failed on iteration %d within MCP loop: %w", iter, llmErr)
 						return heart.IntoError[openai.ChatCompletionResponse](err)
 					}
 
-					lastResponse = llmResponse // Store this response
+					// Log details from the received response
+					if len(llmResponse.Choices) > 0 {
+						choice := llmResponse.Choices[0]
+						fmt.Printf("DEBUG: [MCP Loop Iter %d] LLM FinishReason: '%s'\n", iter, choice.FinishReason)
+						fmt.Printf("DEBUG: [MCP Loop Iter %d] LLM Response ID: '%s'\n", iter, llmResponse.ID) // Check if ID changes
+						fmt.Printf("DEBUG: [MCP Loop Iter %d] LLM Response Content: %.60s...\n", iter, strings.ReplaceAll(choice.Message.Content, "\n", "\\n"))
+						if len(choice.Message.ToolCalls) > 0 {
+							fmt.Printf("DEBUG: [MCP Loop Iter %d] LLM requested %d tool call(s).\n", iter, len(choice.Message.ToolCalls))
+							// Optional: Log details of requested calls
+							// for tcIdx, tc := range choice.Message.ToolCalls {
+							// 	fmt.Printf("  ToolCall %d: ID=%s Type=%s FuncName=%s\n", tcIdx, tc.ID, tc.Type, tc.Function.Name)
+							// }
+						} else {
+							fmt.Printf("DEBUG: [MCP Loop Iter %d] LLM did not request tool calls.\n", iter)
+						}
+					} else {
+						// This case indicates an issue with the LLM response format or an empty response
+						fmt.Printf("WARN: [MCP Loop Iter %d] LLM response had no choices. Response Object: %+v\n", iter, llmResponse)
+						// Potentially return an error here, as processing cannot continue normally.
+						err := fmt.Errorf("LLM response contained no choices on iteration %d", iter)
+						return heart.IntoError[openai.ChatCompletionResponse](err)
+					}
+					// --- **** END ADDED DEBUG LOGGING **** ---
+
+					// Store the received response
+					lastResponse = llmResponse
 
 					// --- Check if Tool Calls are present in the response ---
 					toolCalls := []openai.ToolCall{} // Initialize empty slice
+					// Use the already checked choice from logging block if possible, otherwise re-check
 					if len(llmResponse.Choices) > 0 && llmResponse.Choices[0].Message.ToolCalls != nil {
 						toolCalls = llmResponse.Choices[0].Message.ToolCalls
 					}
@@ -139,96 +195,127 @@ func mcpWorkflowHandler(
 					// --- Exit Condition: No Tool Calls Requested ---
 					if len(toolCalls) == 0 {
 						// The LLM did not request any tools, this is the final answer.
+						fmt.Printf("INFO: [MCP Loop Iter %d] Loop condition met (no tool calls requested by LLM). Returning final response.\n", iter)
 						return heart.Into(lastResponse)
 					}
 
 					// --- Tool Calls Exist: Process and Invoke ---
+					fmt.Printf("INFO: [MCP Loop Iter %d] LLM requested %d tool call(s). Processing...\n", iter, len(toolCalls))
 
 					// 1. Add the assistant's message (requesting tools) to the history
-					if len(llmResponse.Choices) > 0 { // Safety check
-						currentMessages = append(currentMessages, llmResponse.Choices[0].Message)
+					// Ensure we only add if choices exist (already checked, but good practice)
+					if len(llmResponse.Choices) > 0 {
+						// Make a copy of the message to avoid potential side effects if the original response object is mutated elsewhere
+						assistantMsg := llmResponse.Choices[0].Message
+						currentMessages = append(currentMessages, assistantMsg)
+						fmt.Printf("DEBUG: [MCP Loop Iter %d] Appended Assistant message requesting tools to history.\n", iter)
 					}
 
-					// --- Invoke Tools in Parallel --- (Using the *same* listTools result from before the loop)
-					// [Existing tool invocation logic remains the same]
+					// --- Invoke Tools in Parallel ---
 					toolCallFutures := make([]*heart.Future[internal.CallToolOutput], len(toolCalls))
+					fmt.Printf("DEBUG: [MCP Loop Iter %d] Starting %d tool call node(s).\n", iter, len(toolCalls))
 					for i, toolCall := range toolCalls {
+						// Basic validation of the tool call structure
 						if toolCall.Type != openai.ToolTypeFunction || toolCall.Function.Name == "" {
-							err := fmt.Errorf("invalid tool call from LLM on iteration %d: type=%s, id=%s, function_name=%s", iter, toolCall.Type, toolCall.ID, toolCall.Function.Name)
-							errorHandle := heart.IntoError[internal.CallToolOutput](err)
+							errMsg := fmt.Sprintf("invalid tool call from LLM on iteration %d: type=%s, id=%s, function_name=%s", iter, toolCall.Type, toolCall.ID, toolCall.Function.Name)
+							fmt.Printf("ERROR: [MCP Loop Iter %d] %s\n", iter, errMsg)
+							// Create an error handle for this specific failed call
+							errorHandle := heart.IntoError[internal.CallToolOutput](errors.New(errMsg))
+							toolCallFutures[i] = heart.FanIn(loopCtx, errorHandle)
+							continue // Skip starting the actual tool call node
+						}
+
+						// Ensure MCP tools were listed if needed (should be guaranteed by mcpToolsAvailable check earlier)
+						if !mcpToolsAvailable && len(originalReq.Tools) == 0 { // Check if *any* tools were expected
+							errMsg := fmt.Sprintf("LLM requested MCP tool '%s' but no tools were initially listed or provided", toolCall.Function.Name)
+							fmt.Printf("ERROR: [MCP Loop Iter %d] %s\n", iter, errMsg)
+							errorHandle := heart.IntoError[internal.CallToolOutput](errors.New(errMsg))
 							toolCallFutures[i] = heart.FanIn(loopCtx, errorHandle)
 							continue
 						}
-						// We still need MCPToolsResult map, guaranteed to exist if mcpToolsAvailable was true
-						if !mcpToolsAvailable {
-							// Should not happen if toolCalls were generated based on MCP tools, but defensive check.
-							err := fmt.Errorf("LLM requested MCP tool '%s' but no MCP tools were initially listed", toolCall.Function.Name)
-							errorHandle := heart.IntoError[internal.CallToolOutput](err)
-							toolCallFutures[i] = heart.FanIn(loopCtx, errorHandle)
-							continue
-						}
+
+						// Prepare input for the callToolNode
 						callInput := internal.CallToolInput{
 							ToolCall:       toolCall,
-							MCPToolsResult: toolsResult.MCPToolsResult,
+							MCPToolsResult: toolsResult.MCPToolsResult, // Pass the map from listTools
 						}
+						// Start the node to execute this specific tool call
 						callHandle := callToolNodeDef.Start(heart.Into(callInput))
 						toolCallFutures[i] = heart.FanIn(loopCtx, callHandle)
 					}
 
 					// --- Collect Tool Results ---
-					// [Existing tool result collection logic remains the same]
+					fmt.Printf("DEBUG: [MCP Loop Iter %d] Waiting for %d tool call node(s) to complete.\n", iter, len(toolCallFutures))
 					toolMessages := make([]openai.ChatCompletionMessage, 0, len(toolCalls))
 					for i, future := range toolCallFutures {
-						callOutput, callErr := future.Get()        // Wait for the i-th tool call
-						toolCallID := toolCalls[i].ID              // Original Tool Call ID
-						toolCallName := toolCalls[i].Function.Name // Original Tool Call Name
+						callOutput, callErr := future.Get()        // Wait for the i-th tool call node
+						toolCallID := toolCalls[i].ID              // Get the original Tool Call ID
+						toolCallName := toolCalls[i].Function.Name // Get the original Tool Call Name
 
+						// Handle framework errors from the callToolNode itself
 						if callErr != nil {
+							fmt.Printf("ERROR: [MCP Loop Iter %d] Framework error getting result for tool '%s' (ID: %s): %v\n", iter, toolCallName, toolCallID, callErr)
 							toolMessages = append(toolMessages, openai.ChatCompletionMessage{
 								Role:       openai.ChatMessageRoleTool,
-								Content:    fmt.Sprintf("Error: Failed to invoke tool %s due to internal framework/node error.", toolCallName),
+								Content:    fmt.Sprintf("Error: Failed to get result for tool %s due to internal framework error.", toolCallName),
 								ToolCallID: toolCallID,
 							})
-							continue
+							continue // Continue collecting other results
 						}
+
+						// Handle errors reported *by* the callToolNode's internal logic (e.g., DI failure)
+						// or errors formatted *from* the tool execution itself via formatToolResult
 						if callOutput.Error != nil {
-							errorContent := fmt.Sprintf("Error executing tool %s: %s", toolCallName, callOutput.Error.Error())
+							// This 'Error' field in CallToolOutput is primarily for framework/DI errors within the node.
+							// Tool execution errors should ideally be in ResultMsg.Content already.
+							fmt.Printf("ERROR: [MCP Loop Iter %d] callToolNode reported internal error for tool '%s' (ID: %s): %v\n", iter, toolCallName, toolCallID, callOutput.Error)
+							errorContent := fmt.Sprintf("Error processing tool %s: %s", toolCallName, callOutput.Error.Error())
 							toolMessages = append(toolMessages, openai.ChatCompletionMessage{
 								Role:       openai.ChatMessageRoleTool,
 								Content:    errorContent,
 								ToolCallID: toolCallID,
-								Name:       toolCallName,
+								Name:       toolCallName, // Name might be useful for LLM if content indicates an error
 							})
 							continue
 						}
-						// Success: Append the result message
-						if callOutput.ResultMsg.ToolCallID != toolCallID {
-							fmt.Printf("WARN: ToolCallID mismatch in CallToolOutput for tool '%s' on iter %d. Expected '%s', got '%s'\n", toolCallName, iter, toolCallID, callOutput.ResultMsg.ToolCallID)
-							callOutput.ResultMsg.ToolCallID = toolCallID // Correct it
+
+						// Success: Append the result message from CallToolOutput
+						// Ensure the ToolCallID matches (should always if generated correctly)
+						if callOutput.ResultMsg.ToolCallID == "" {
+							fmt.Printf("WARN: [MCP Loop Iter %d] callToolNode result for '%s' missing ToolCallID. Setting from original: %s\n", iter, toolCallName, toolCallID)
+							callOutput.ResultMsg.ToolCallID = toolCallID
+						} else if callOutput.ResultMsg.ToolCallID != toolCallID {
+							fmt.Printf("WARN: [MCP Loop Iter %d] ToolCallID mismatch in CallToolOutput for tool '%s'. Expected '%s', got '%s'. Using expected ID.\n", iter, toolCallName, toolCallID, callOutput.ResultMsg.ToolCallID)
+							callOutput.ResultMsg.ToolCallID = toolCallID // Correct it to match the request
 						}
-						callOutput.ResultMsg.Role = openai.ChatMessageRoleTool // Ensure role
+						// Ensure Role is Tool
+						callOutput.ResultMsg.Role = openai.ChatMessageRoleTool
+						// Add Name field if not already present (often helpful for LLM)
+						if callOutput.ResultMsg.Name == "" {
+							callOutput.ResultMsg.Name = toolCallName
+						}
+						fmt.Printf("DEBUG: [MCP Loop Iter %d] Received result for tool '%s' (ID: %s): Content='%.60s...'\n", iter, toolCallName, toolCallID, strings.ReplaceAll(callOutput.ResultMsg.Content, "\n", "\\n"))
 						toolMessages = append(toolMessages, callOutput.ResultMsg)
 					}
 
-					// 2. Add the tool results/errors to the message history
+					// 2. Add the collected tool results/errors to the message history
 					currentMessages = append(currentMessages, toolMessages...)
+					fmt.Printf("DEBUG: [MCP Loop Iter %d] Appended %d tool message(s) to history.\n", iter, len(toolMessages))
 
-					// 3. *** Mark that tools have now been called in this run ***
-					// This will affect ToolChoice in the *next* iteration.
+					// 3. Mark that tools have now been called in this run
+					// This might affect ToolChoice logic in the *next* iteration if implemented that way.
 					toolsHaveBeenCalled = true
 
-					// 4. Log invocation errors if any, but continue the loop
-					// if len(invocationErrors) > 0 {
-					// 	fmt.Printf("WARN: MCP middleware encountered errors invoking tools on iteration %d for node '%s': %s\n",
-					// 		iter, loopCtx.BasePath, strings.Join(invocationErrors, "; "))
-					// }
+					fmt.Printf("--- MCP Loop Iteration %d End ---\n", iter) // Mark iteration end
 
 					// Loop continues...
 
 				} // --- End of for loop ---
 
 				// --- Exit Condition: Max Iterations Reached ---
-				return heart.IntoError[openai.ChatCompletionResponse](errMaxIterationsReached) // Return the last thing the LLM said
+				fmt.Printf("ERROR: [MCP Loop] Max iterations (%d) reached. Returning error.\n", maxToolIterations)
+				// Return the error indicating max iterations were hit
+				return heart.IntoError[openai.ChatCompletionResponse](errMaxIterationsReached)
 
 			}) // End NewNode function definition
 
@@ -237,7 +324,7 @@ func mcpWorkflowHandler(
 	}
 }
 
-// WithMCP function remains the same.
+// WithMCP function creates the middleware node definition.
 func WithMCP(
 	nodeID heart.NodeID,
 	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
@@ -250,8 +337,10 @@ func WithMCP(
 	}
 
 	// Define the internal node *blueprints* needed by the workflow handler ONCE.
-	listToolsNodeDef := internal.DefineListToolsNode(heart.NodeID(string(nodeID) + "_listTools"))
-	callToolNodeDef := internal.DefineCallToolNode(heart.NodeID(string(nodeID) + "_callTool"))
+	// Use specific IDs based on the middleware instance's nodeID to avoid conflicts
+	// if the same middleware is used multiple times in a workflow.
+	listToolsNodeDef := internal.DefineListToolsNode(heart.NodeID(fmt.Sprintf("%s_listTools", nodeID)))
+	callToolNodeDef := internal.DefineCallToolNode(heart.NodeID(fmt.Sprintf("%s_callTool", nodeID)))
 
 	// Create the specific workflow handler function, capturing the necessary node definitions.
 	handler := mcpWorkflowHandler(nextNodeDef, listToolsNodeDef, callToolNodeDef)
