@@ -2,6 +2,7 @@
 package heart
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -183,7 +184,15 @@ func (ne *nodeExecution[In, Out]) execute() {
 		return
 	}
 
-	resolverCtx := ne.workflowCtx.ctx
+	// Base Go context from the workflow context
+	resolverGoCtx := ne.workflowCtx.ctx
+
+	// --- START FIX for NewNode Context ---
+	// Wrap the Go context with runtime heart.Context and execPath
+	// for resolvers (like newNodeResolver) that need them.
+	resolverGoCtxWithValue := context.WithValue(resolverGoCtx, heartContextKey{}, ne.workflowCtx)
+	resolverGoCtxWithValue = context.WithValue(resolverGoCtxWithValue, execPathKey{}, ne.execPath)
+	// --- END FIX for NewNode Context ---
 
 	var execOut Out
 	var execErr error
@@ -194,7 +203,8 @@ func (ne *nodeExecution[In, Out]) execute() {
 		// Use the unique path in panic message
 		panic(fmt.Sprintf("internal error: resolver is nil during execution for node %s", ne.execPath))
 	}
-	execOut, execErr = ne.resolver.Get(resolverCtx, ne.inValue) // <<< Use ne.resolver
+	// <<< Pass the wrapped context with runtime values >>>
+	execOut, execErr = ne.resolver.Get(resolverGoCtxWithValue, ne.inValue)
 
 	ne.err = execErr
 	if execErr == nil {

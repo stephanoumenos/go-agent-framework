@@ -262,8 +262,7 @@ var _ ExecutionHandle[any] = (*into[any])(nil)
 // The definition created here will have its own instanceCounter.
 type newNodeResolver[In, Out any] struct { // Note: newNodeResolver takes In type now for consistency
 	fun    func(ctx NewNodeContext) ExecutionHandle[Out]
-	defCtx Context // Context captured when NewNode was called
-	nodeID NodeID  // ID of the NewNode definition itself
+	nodeID NodeID // ID of the NewNode definition itself
 }
 type genericNodeInitializer struct{ id NodeTypeID }
 
@@ -317,51 +316,51 @@ func (r *newNodeResolver[In, Out]) Get(runCtx context.Context, in In) (Out, erro
 	// and defines a node `nn:B`, the BasePath for `fun` should be `/A:#0/B`.
 	// The `newNodeResolver` itself doesn't need the instance ID part for the *inner* context path calculation.
 
+	runtimeWfCtx, okWfCtx := runCtx.Value(heartContextKey{}).(Context)
+	runtimeExecPath, okExecPath := runCtx.Value(execPathKey{}).(NodePath)
+
+	if !okWfCtx || !okExecPath {
+		// This indicates an internal error, likely nodeExecution didn't wrap the context correctly.
+		return *new(Out), fmt.Errorf("internal error: NewNode (%s) couldn't retrieve runtime context/path via context.Value. WfCtxOK: %v, ExecPathOK: %v", r.nodeID, okWfCtx, okExecPath)
+		// Using panic might be appropriate here as it signifies a programming error in the framework.
+		// panic(fmt.Sprintf("internal error: NewNode (%s) couldn't retrieve runtime context/path via context.Value", r.nodeID))
+	}
+
 	newNodeCtx := NewNodeContext{
 		Context: Context{
-			ctx:       runCtx, // Use the runtime context passed to Get
-			nodeCount: r.defCtx.nodeCount,
-			store:     r.defCtx.store,
-			uuid:      r.defCtx.uuid,
-			registry:  r.defCtx.registry, // <<< CRITICAL FLAW: Uses registry captured at definition time! Needs runtime registry.
-			// ^^^ This needs the registry from the *current execution context*.
+			// Standard Go Context handling: Pass the received context down.
+			// It contains cancellation signals and potentially other values.
+			ctx: runCtx,
 
-			// BasePath for the inner execution: Join the *parent's* BasePath with this NewNode's BASE ID.
-			// The instance ID is part of the parent's BasePath if applicable.
-			BasePath: JoinPath(r.defCtx.BasePath, r.nodeID),
+			// Core Heart Context fields: Use values from the *runtime* context.
+			nodeCount: runtimeWfCtx.nodeCount, // Use runtime atomic counter
+			store:     runtimeWfCtx.store,     // Use runtime store instance
+			uuid:      runtimeWfCtx.uuid,      // Use runtime workflow UUID
+			registry:  runtimeWfCtx.registry,  // <<< Use runtime registry instance
+			cancel:    runtimeWfCtx.cancel,    // Use runtime cancel function
 
-			cancel: r.defCtx.cancel, // Inherit cancel func
+			// BasePath for the subgraph: Use the unique execution path of *this* NewNode wrapper.
+			BasePath: runtimeExecPath, // <<< Use runtime unique execPath of the wrapper node
 		},
 	}
-	// --- MAJOR REFACTOR NEEDED for NewNode Context ---
-	// The `Get` method needs the *runtime* context (specifically the registry and potentially the unique execPath).
-	// The current design captures the *definition-time* context (`defCtx`), which is incorrect for the registry.
 
-	// --> Let's assume `runCtx` is correctly derived from the `workflowCtx` in `nodeExecution.execute`,
-	//     and try to reconstruct the `Context` needed by `fun` using parts from both.
-
-	// --- Revised Context Creation for `fun` ---
-	// Get the current execution's workflow context from the node execution instance.
-	// This requires modifying `NodeResolver.Get` signature or passing context differently.
-	// Given the constraints, we cannot fix this cleanly without changing interfaces.
-	// We will proceed *assuming* the original code's intent worked, but acknowledge the flaw.
-	// The `registry` used below is likely WRONG.
-
-	fmt.Printf("WARNING: heart.NewNode context creation is likely flawed due to using definition-time registry.\n")
-	subGraphHandle := r.fun(newNodeCtx) // Calls user func with potentially incorrect context registry
+	// --- Execute the User Function ---
+	// fmt.Printf("DEBUG: heart.NewNode (%s) executing user function with BasePath: %s\n", r.nodeID, newNodeCtx.BasePath) // Optional debug log
+	subGraphHandle := r.fun(newNodeCtx) // Calls user func with CORRECT context
 	if subGraphHandle == nil {
-		// Use the calculated BasePath in the error
+		// Use the correct BasePath (the unique path of the wrapper) in the error.
 		return *new(Out), fmt.Errorf("NewNode function for '%s' returned nil handle", newNodeCtx.BasePath)
 	}
 
-	// Resolve the inner graph using the (potentially flawed) context.
+	// --- Resolve the Subgraph ---
+	// Resolve the inner graph using the CORRECT context (newNodeCtx.Context).
+	// internalResolve will handle node creation/lookup within the subgraph using the correct registry and BasePath.
 	resolvedVal, err := internalResolve[Out](newNodeCtx.Context, subGraphHandle)
 	if err != nil {
-		// Use the calculated BasePath in the error
+		// Use the correct BasePath (the unique path of the wrapper) in the error context.
 		return *new(Out), fmt.Errorf("error resolving NewNode sub-graph at '%s': %w", newNodeCtx.BasePath, err)
 	}
 	return resolvedVal, nil
-
 }
 
 // --- NewNode ExecutionCreator Implementation ---
@@ -383,8 +382,7 @@ func (r *newNodeResolver[In, Out]) createExecution(
 		}
 	}
 	// Use newExecution for the newNode wrapper itself, passing the unique path
-	// The wfCtx here IS the correct runtime context.
-	ne := newExecution[In, Out](
+	ne := newExecution(
 		inputHandle,
 		wfCtx,    // <<< Pass the correct runtime context
 		execPath, // <<< Pass unique path
@@ -392,11 +390,6 @@ func (r *newNodeResolver[In, Out]) createExecution(
 		initializer,
 		r, // Pass the resolver itself
 	)
-
-	// --- Fix the resolver's captured context? ---
-	// Maybe update r.defCtx.registry here? This feels hacky.
-	// r.defCtx.registry = wfCtx.registry // Mutating captured state - potential race conditions if resolver is reused?
-
 	return ne, nil
 }
 
@@ -412,8 +405,8 @@ func NewNode[Out any](ctx Context, nodeID NodeID, fun func(ctx NewNodeContext) E
 		panic("heart.NewNode requires a non-empty node ID")
 	}
 	// Use struct{} as input type for the wrapper node
-	// Capture the context *at definition time*. This context's registry is potentially problematic later.
-	resolver := &newNodeResolver[struct{}, Out]{fun: fun, defCtx: ctx, nodeID: nodeID}
+	// Create resolver, only storing the function and nodeID. Runtime context comes later.
+	resolver := &newNodeResolver[struct{}, Out]{fun: fun, nodeID: nodeID} // REMOVED defCtx
 
 	// Define the wrapper node. This definition gets its own instanceCounter.
 	nodeDefinition := DefineNode[struct{}, Out](nodeID, resolver)
@@ -421,11 +414,6 @@ func NewNode[Out any](ctx Context, nodeID NodeID, fun func(ctx NewNodeContext) E
 	// Start the wrapper node. This creates a handle.
 	// The handle doesn't have its unique path *yet*.
 	wrapperHandle := nodeDefinition.Start(Into(struct{}{}))
-
-	// NOTE: Setting the path here is premature and potentially INCORRECT.
-	// The unique path is determined later in internalResolve based on the instance ID.
-	// Removing this line:
-	// wrapperHandle.internal_setPath(JoinPath(ctx.BasePath, nodeID))
 
 	// The handle returned here will have its path set correctly when internalResolve is called on it.
 	return wrapperHandle
@@ -472,6 +460,12 @@ func Execute[Out any](ctx context.Context, handle ExecutionHandle[Out], opts ...
 
 	return result, err
 }
+
+// --- Internal context keys ---
+// Used to pass runtime heart.Context and execPath via context.Value
+// from nodeExecution to newNodeResolver.Get without changing interfaces.
+type heartContextKey struct{}
+type execPathKey struct{}
 
 // --- Workflow Options ---
 // (Remains the same)
