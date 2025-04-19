@@ -247,7 +247,7 @@ func TestMCPWorkflowIntegration(t *testing.T) {
 		// ExpectedMessages2 are the messages the mock expects to *receive* for the second call
 		ExpectedMessages2: []goopenai.ChatCompletionMessage{
 			// System prompt from mainWorkflowHandler
-			{Role: goopenai.ChatMessageRoleSystem, Content: "You are a helpful assistant. Use tools when necessary."},
+			{Role: goopenai.ChatMessageRoleSystem, Content: "You are a helpful assistant. Use tools when necessary to perform calculations."},
 			// User prompt from input
 			{Role: goopenai.ChatMessageRoleUser, Content: inputPrompt},
 			// Assistant message *requesting* the tool call (matches ToolCallRequest)

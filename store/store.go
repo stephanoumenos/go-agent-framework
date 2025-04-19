@@ -3,12 +3,8 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	// Import strings
 )
 
 // Common errors
@@ -17,7 +13,6 @@ var (
 	ErrNodeNotFound    = errors.New("node not found")
 	ErrContentNotFound = errors.New("content not found")
 	ErrMarshaling      = errors.New("content cannot be marshaled to JSON")
-	// Consider adding ErrGraphExists, ErrNodeExists if needed
 )
 
 // NodePath type alias for clarity, representing the full path from the root.
@@ -145,28 +140,4 @@ func WithLogger(logger Logger) StoreOption {
 		}
 		o.Logger = logger
 	}
-}
-
-// ===============================================================
-// HELPERS (Example implementations, might live elsewhere)
-// ===============================================================
-
-// hashContent marshals and calculates the SHA-256 hash of content.
-func hashContent(content any) (string, error) {
-	// Use standard JSON marshaling for hash calculation consistency
-	bytes, err := json.Marshal(content)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrMarshaling, err)
-	}
-	hash := sha256.Sum256(bytes)
-	return hex.EncodeToString(hash[:]), nil
-}
-
-// estimateContentSize marshals and estimates the size of content.
-func estimateContentSize(content any) (int, error) {
-	bytes, err := json.Marshal(content)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrMarshaling, err)
-	}
-	return len(bytes), nil
 }

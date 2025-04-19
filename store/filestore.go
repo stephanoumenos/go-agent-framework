@@ -30,13 +30,6 @@ type fileNode struct {
 	ResponseHash     string         `json:"responseHash,omitempty"`
 	ResponseEmbedded bool           `json:"responseEmbedded,omitempty"`
 	ResponseContent  any            `json:"responseContent,omitempty"`
-
-	// Redundant fields if 'Data' holds the nodeState map directly:
-	// Status             string         `json:"status"` // Redundant if in Data
-	// Error              string         `json:"error,omitempty"` // Redundant if in Data
-	// InputPersistError  string         `json:"input_persist_error,omitempty"` // Redundant
-	// OutputPersistError string         `json:"output_persist_error,omitempty"` // Redundant
-	// IsTerminal         bool           `json:"is_terminal"` // Redundant
 }
 
 // NewFileStore creates a new filesystem-based store with the specified options

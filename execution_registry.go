@@ -7,61 +7,106 @@ import (
 	"sync"
 )
 
-// ExecutionCreator defines the capability of creating an execution instance.
-// *** Implemented by INTERNAL NodeResolvers like workflowResolver and newNodeResolver ***.
+// ExecutionCreator defines the capability for certain internal NodeResolver types
+// (specifically, workflowResolver and newNodeResolver) to create their own specialized
+// executioner instances (workflowExecutioner or the standard nodeExecution wrapper).
+// This allows these composite node types to manage their internal execution logic
+// and context scoping differently from standard atomic nodes.
 type ExecutionCreator interface {
-	// createExecution creates the specific executioner instance (nodeExecution or workflowExecutioner).
-	// It takes the runtime execution path (NOW UNIQUE), input source handle (as any), workflow context,
-	// node ID (BASE ID), type ID, and the initialized NodeInitializer.
+	// createExecution constructs the specific executioner instance associated
+	// with the resolver (e.g., workflowExecutioner for workflowResolver).
+	// It receives all necessary runtime information, including:
+	// - execPath: The unique, absolute path assigned to this specific execution instance.
+	// - inputSourceAny: The ExecutionHandle providing input (passed as `any`).
+	// - wfCtx: The Context object from the parent scope (workflow or Execute call).
+	// - nodeID: The base NodeID of the definition (without instance ID).
+	// - nodeTypeID: The NodeTypeID from the definition's initializer.
+	// - initializer: The initialized NodeInitializer instance from the definition.
 	createExecution(
-		execPath NodePath, // <<< Now the unique path including instance ID
+		execPath NodePath, // The unique path including instance ID.
 		inputSourceAny any,
 		wfCtx Context,
-		nodeID NodeID, // Base NodeID (without instance ID)
+		nodeID NodeID, // Base NodeID (without instance ID).
 		nodeTypeID NodeTypeID,
 		initializer NodeInitializer,
 	) (executioner, error)
 }
 
-// executionRegistry manages executioner instances for nodes and workflows within a single run.
+// executionRegistry manages the memoization of executioner instances for all
+// nodes and workflows within a single workflow execution run (associated with
+// a specific Context). It ensures that each unique node instance (identified by
+// its unique NodePath) is created and executed only once.
 type executionRegistry struct {
-	executions map[NodePath]executioner // <<< Key is the unique NodePath
-	mu         sync.Mutex
+	// executions maps unique NodePaths to their corresponding executioner instances.
+	executions map[NodePath]executioner
+	mu         sync.Mutex // Protects concurrent access to the executions map.
 }
 
-// executioner is the internal interface for execution instances (nodes or workflows).
+// executioner is the internal interface implemented by all executable instances
+// within the framework (currently nodeExecution and workflowExecutioner).
+// It defines the essential methods needed by the registry and resolution logic
+// to manage and retrieve results from node/workflow instances.
 type executioner interface {
+	// getResult triggers the execution (if not already started via sync.Once)
+	// and returns the final result (as `any`) and error. It blocks until completion.
 	getResult() (any, error)
+	// InternalDone returns a channel that is closed when the executioner finishes.
 	InternalDone() <-chan struct{}
-	getNodePath() NodePath // Returns the unique path
+	// getNodePath returns the unique NodePath assigned to this executioner instance.
+	getNodePath() NodePath
 }
 
-// newExecutionRegistry creates a new registry.
+// newExecutionRegistry creates a new, empty executionRegistry.
 func newExecutionRegistry() *executionRegistry {
 	return &executionRegistry{executions: make(map[NodePath]executioner)}
 }
 
-// definitionGetter defines an interface specifically for getting the Resolver and Initializer state from a definition.
-// <<< Added internal_GetNextInstanceID >>>
+// definitionGetter is an internal interface implemented by NodeDefinition types
+// (specifically, the internal `definition` struct). It provides methods for the
+// executionRegistry to access necessary details from a definition *after* its
+// Start() method has performed initialization (like DI checks and instance counter setup),
+// without needing the full generic type parameters of the definition.
 type definitionGetter interface {
+	// internal_GetNodeID returns the base NodeID of the definition.
 	internal_GetNodeID() NodeID
-	internal_GetResolver() any // Returns the NodeResolver instance (as any)
+	// internal_GetResolver returns the NodeResolver instance (as `any`).
+	internal_GetResolver() any
+	// internal_GetNodeTypeID returns the NodeTypeID from the initializer.
 	internal_GetNodeTypeID() NodeTypeID
+	// internal_GetInitializer returns the initialized NodeInitializer instance.
 	internal_GetInitializer() NodeInitializer
-	internal_GetInitError() error // Get error captured during definition.Start()
-	// ADDED: Method to create the standard node executioner
+	// internal_GetInitError returns any error captured during the definition's
+	// initialization phase (e.g., DI failure).
+	internal_GetInitError() error
+	// internal_createNodeExecution creates the standard nodeExecution instance
+	// for atomic nodes. This method exists on the concrete `definition` type
+	// where the input/output types are known.
 	internal_createNodeExecution(execPath NodePath, inputSourceAny any, wfCtx Context) (executioner, error)
-	internal_GetNextInstanceID() uint64 // <<< NEW: Method to get instance ID
+	// internal_GetNextInstanceID atomically retrieves the next unique instance ID
+	// for this definition blueprint (0, 1, 2,...).
+	internal_GetNextInstanceID() uint64
 }
 
-// getOrCreateExecution finds or creates the executioner instance for a handle.
-// Called lazily by internalResolve.
-// The nodePath provided MUST be the final, unique path for the instance.
-// <<< Signature Changed: Accepts unique nodePath, passes handle >>>
+// getOrCreateExecution is the core function for retrieving or creating an executioner
+// instance associated with a specific ExecutionHandle within a given Context.
+// It is called lazily by `internalResolve` when a handle needs to be evaluated.
+//
+// It performs the following steps:
+//  1. Acquires a lock on the registry.
+//  2. Checks if an executioner already exists for the provided unique `nodePath`.
+//  3. If not found:
+//     a. Retrieves the definition and input source from the `handle`.
+//     b. Handles the edge case for "into" nodes (returning a dummy executioner).
+//     c. Asserts the definition to `definitionGetter` to access internal methods.
+//     d. Checks for initialization errors captured by the definition; returns an error executioner if found.
+//     e. Determines whether the definition's resolver is an `ExecutionCreator` (workflow, NewNode) or a standard resolver.
+//     f. Calls the appropriate creation method (`createExecution` on the creator or `internal_createNodeExecution` on the definitionGetter) to instantiate the executioner, passing the unique `nodePath`.
+//     g. Stores the newly created executioner in the registry using the unique `nodePath` as the key.
+//  4. Returns the existing or newly created executioner.
 func getOrCreateExecution[Out any](r *executionRegistry, nodePath NodePath, handle ExecutionHandle[Out], wfCtx Context) executioner {
-	// Path uniqueness/validity checks (optional, but good)
+	// Basic validation: Ensure the path provided is final and unique.
 	if nodePath == "" || strings.HasPrefix(string(nodePath), "/_runtime/unresolved") {
-		// Allow /_source/ prefix for 'into' nodes handled later
+		// Allow special "/_source/" prefix for 'into' nodes, handled later.
 		if !strings.HasPrefix(string(nodePath), "/_source/") {
 			panic(fmt.Sprintf("getOrCreateExecution called with unset or unresolved path: '%s'", nodePath))
 		}
@@ -70,170 +115,175 @@ func getOrCreateExecution[Out any](r *executionRegistry, nodePath NodePath, hand
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	execInstance, exists := r.executions[nodePath] // <<< Use unique nodePath directly for lookup
+	// 1. Check if executioner already exists for this unique path.
+	execInstance, exists := r.executions[nodePath]
 	if !exists {
+		// 3a. Retrieve definition and input from the handle.
 		defAny := handle.internal_getDefinition()
 		inputSourceAny := handle.internal_getInputSource()
 
-		if defAny == nil { // Handle 'into' nodes edge case
+		// 3b. Handle "into" nodes (which have no definition).
+		if defAny == nil {
 			if strings.HasPrefix(string(nodePath), "/_source/") {
 				val, err := handle.internal_out()
-				// NOTE: Ensure 'into' paths passed here are also unique if necessary,
-				// internalResolve logic seems to handle this reasonably well already.
+				// Create a simple executioner that returns the direct value/error.
 				dummy := &dummyExecutioner{path: nodePath, value: val, err: err, done: make(chan struct{})}
-				close(dummy.done)
-				r.executions[nodePath] = dummy // <<< Use nodePath as key
+				close(dummy.done)              // Mark as done immediately.
+				r.executions[nodePath] = dummy // Store using the unique path.
 				return dummy
-			} else {
-				panic(fmt.Sprintf("registry: encountered nil definition for non-source path: %s", nodePath))
 			}
+			// If definition is nil for a non-source path, it's an internal error.
+			panic(fmt.Sprintf("registry: encountered nil definition for non-source path: %s", nodePath))
 		}
 
-		// Assert the definition object to the definitionGetter interface
+		// 3c. Assert definition to access internal methods.
 		defGetter, ok := defAny.(definitionGetter)
 		if !ok {
-			// This should not happen if handle.internal_getDefinition() returns *definition
 			panic(fmt.Sprintf("registry: definition type %T does not implement definitionGetter for path %s", defAny, nodePath))
 		}
 
-		// Check for initialization errors captured during definition.Start
+		// 3d. Check for initialization errors.
 		initErr := defGetter.internal_GetInitError()
 		if initErr != nil {
-			// Use base NodeID for error message consistency, but unique path for context
+			// If initialization failed, create an error executioner that immediately returns the error.
 			err := fmt.Errorf("node '%s' (base ID: %s) failed during initialization: %w", nodePath, defGetter.internal_GetNodeID(), initErr)
 			errorExec := newErrorExecutioner(nodePath, err)
-			r.executions[nodePath] = errorExec // Store error exec so subsequent calls fail fast
+			r.executions[nodePath] = errorExec // Store error exec.
 			return errorExec
 		}
 
-		// Get common components needed for creation
+		// Retrieve resolver, initializer, and IDs for creation context.
 		resolverAny := defGetter.internal_GetResolver()
 		initializer := defGetter.internal_GetInitializer()
-		nodeID := defGetter.internal_GetNodeID()         // Base NodeID for creator context if needed
-		nodeTypeID := defGetter.internal_GetNodeTypeID() // Type ID for creator
+		nodeID := defGetter.internal_GetNodeID()         // Base NodeID.
+		nodeTypeID := defGetter.internal_GetNodeTypeID() // Type ID.
 
+		// Safeguard against nil resolver/initializer after successful init check.
 		if resolverAny == nil || initializer == nil {
 			panic(fmt.Sprintf("registry: definition for path %s returned nil resolver or initializer despite no init error", nodePath))
 		}
 
-		// --- Executioner Creation Logic ---
+		// 3e/3f. Create the appropriate executioner instance.
 		var newExec executioner
 		var err error
 
-		// Check if the resolver is one of the internal types that requires custom execution logic
-		// (i.e., implements ExecutionCreator).
+		// Check if the resolver needs custom creation logic (workflow, NewNode).
 		if creator, isCreator := resolverAny.(ExecutionCreator); isCreator {
-			// It's a workflow or newNode - use its specific createExecution method.
-			// <<< Pass the final unique nodePath directly >>>
+			// Use the resolver's own createExecution method.
 			newExec, err = creator.createExecution(
-				nodePath, // <<< Use final unique path
+				nodePath, // Pass the final unique path.
 				inputSourceAny,
 				wfCtx,
-				nodeID,     // Base NodeID
-				nodeTypeID, // Type ID
+				nodeID, // Base NodeID.
+				nodeTypeID,
 				initializer,
 			)
-			// Wrap error if needed for context
 			if err != nil {
 				err = fmt.Errorf("registry: failed to create execution instance via ExecutionCreator for %s: %w", nodePath, err)
 			}
 		} else {
-			// It's a standard node (user-defined or lib like openai).
-			// Use the definitionGetter's specific method to create the executioner.
-			// The *definition[In, Out] implementation of this method knows the 'In' type.
-			// <<< Pass the final unique nodePath directly >>>
+			// It's a standard atomic node. Use the definition's method.
 			newExec, err = defGetter.internal_createNodeExecution(
-				nodePath,       // <<< Use final unique path
-				inputSourceAny, // Pass the input handle as any
+				nodePath, // Pass the final unique path.
+				inputSourceAny,
 				wfCtx,
 			)
-			// Wrap error if needed for context
 			if err != nil {
 				err = fmt.Errorf("registry: failed to create standard node execution instance via definitionGetter for %s: %w", nodePath, err)
 			}
 		}
 
-		// Handle any error from the creation process (either path)
+		// Handle any errors during the creation process itself.
 		if err != nil {
-			fmt.Printf("ERROR: %v\n", err) // Log the creation error
-			newExec = newErrorExecutioner(nodePath, err)
+			fmt.Printf("ERROR: Executioner creation failed: %v\n", err) // Log creation error.
+			newExec = newErrorExecutioner(nodePath, err)                // Create error executioner.
 		}
 
-		r.executions[nodePath] = newExec // <<< Use unique nodePath as key
+		// 3g. Store the new executioner.
+		r.executions[nodePath] = newExec
 		execInstance = newExec
 	}
+	// 4. Return the existing or newly created executioner.
 	return execInstance
 }
 
-// getExecutioner retrieves an existing executioner by path. Used by FanIn.
-func (r *executionRegistry) getExecutioner(path NodePath) executioner { // Path should be unique
+// getExecutioner retrieves an existing executioner directly by its unique NodePath.
+// This is primarily used by `FanIn` to get the executioner corresponding to a
+// dependency handle whose unique path has already been determined by `internalResolve`.
+func (r *executionRegistry) getExecutioner(path NodePath) executioner {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.executions[path] // Look up using the unique path
+	// Direct lookup using the unique path. Returns nil if not found (e.g., for 'into' nodes).
+	return r.executions[path]
 }
 
-// --- workflowExecutioner ---
-// (Implementation remains the same as previous correct version)
-// <<< Accepts unique execPath >>>
+// workflowExecutioner implements the `executioner` interface for workflow instances
+// (defined via WorkflowFromFunc). It manages the execution of the workflow's
+// handler function and the resolution of the workflow's final output node.
 type workflowExecutioner[In, Out any] struct {
-	resolver    *workflowResolver[In, Out] // Reference to the workflow resolver
-	inputSource ExecutionHandle[In]        // Handle for the input
-	workflowCtx Context                    // Context of the *parent* workflow/Execute call
-	execPath    NodePath                   // Execution path of this workflow instance (NOW UNIQUE)
+	resolver    *workflowResolver[In, Out] // The specific resolver containing the workflow handler.
+	inputSource ExecutionHandle[In]        // Handle providing the workflow's input.
+	workflowCtx Context                    // Context inherited from the parent scope.
+	execPath    NodePath                   // The unique execution path of this workflow instance.
 
-	// Memoized result
+	// Memoized result.
 	resultOut Out
 	resultErr error
 
-	// Synchronization
+	// Synchronization.
 	execOnce sync.Once
 	doneCh   chan struct{}
 }
 
-// <<< Accepts unique execPath >>>
+// newWorkflowExecutioner creates a new workflowExecutioner instance.
+// Called by workflowResolver's createExecution method.
 func newWorkflowExecutioner[In, Out any](
 	resolver *workflowResolver[In, Out],
 	input ExecutionHandle[In],
-	wfCtx Context,
-	execPath NodePath, // <<< Now the unique path
+	wfCtx Context, // Parent context.
+	execPath NodePath, // Unique path for this instance.
 ) *workflowExecutioner[In, Out] {
 	return &workflowExecutioner[In, Out]{
 		resolver:    resolver,
 		inputSource: input,
-		workflowCtx: wfCtx,    // Store context from where this workflow was started
-		execPath:    execPath, // <<< Store unique path
+		workflowCtx: wfCtx,    // Store parent context.
+		execPath:    execPath, // Store unique path.
 		doneCh:      make(chan struct{}),
 	}
 }
 
+// getResult implements the `executioner` interface for workflows.
+// Ensures the workflow executes once and returns the memoized result.
 func (we *workflowExecutioner[In, Out]) getResult() (any, error) {
 	we.execOnce.Do(we.execute)
 	<-we.doneCh
 	return we.resultOut, we.resultErr
 }
 
+// InternalDone implements the `executioner` interface.
 func (we *workflowExecutioner[In, Out]) InternalDone() <-chan struct{} {
 	return we.doneCh
 }
 
-// <<< Returns unique path >>>
+// getNodePath implements the `executioner` interface. Returns the unique path.
 func (we *workflowExecutioner[In, Out]) getNodePath() NodePath {
 	return we.execPath
 }
 
+// execute contains the core logic for running a workflow instance. It resolves
+// the workflow's input, creates a new execution Context scoped to the workflow,
+// calls the workflow handler function, and resolves the handle returned by the handler.
 func (we *workflowExecutioner[In, Out]) execute() {
-	defer close(we.doneCh)
-	defer func() { // Memoize result
-		// resultOut and resultErr are set directly before return
-	}()
-	defer func() { // Panic recovery
+	defer close(we.doneCh) // Ensure doneCh is closed on exit.
+	// Defer panic recovery.
+	defer func() {
 		if r := recover(); r != nil {
-			// Propagate panic as error
-			// Use unique path in error
+			// Format error with unique path and memoize.
 			panicErr := fmt.Errorf("panic recovered during workflow execution for %s: %v", we.execPath, r)
+			fmt.Printf("ERROR: %v\n", panicErr)
 			we.resultErr = panicErr
 			we.resultOut = *new(Out)
-			// TODO: Persist workflow panic state? Use unique path?
+			// TODO: Persist workflow panic state? Requires store access.
 		}
 	}()
 
@@ -241,94 +291,97 @@ func (we *workflowExecutioner[In, Out]) execute() {
 	var workflowInput In
 	var inputErr error
 	if we.inputSource != nil {
-		// Resolve input using the PARENT context (workflowCtx)
+		// Resolve input using the PARENT context (we.workflowCtx).
 		resolvedInputAny, depResolveErr := internalResolve[In](we.workflowCtx, we.inputSource)
 		if depResolveErr != nil {
-			// Use unique path in error
 			inputErr = fmt.Errorf("failed to resolve input dependency for workflow '%s': %w", we.execPath, depResolveErr)
 		} else {
-			// Assign the resolved value only if resolution was successful
 			workflowInput = resolvedInputAny
 		}
 	} else {
-		// If no input source, use the zero value for the input type In
-		workflowInput = *new(In)
+		workflowInput = *new(In) // Use zero value if no input source.
 	}
 
+	// Handle input resolution errors.
 	if inputErr != nil {
 		we.resultErr = inputErr
 		we.resultOut = *new(Out)
-		return // Cannot proceed without input
+		return // Cannot proceed without input.
 	}
 
 	// --- Create Execution Context for this Workflow Instance ---
-	// Inherit store, uuid, nodeCount, cancel func from parent (workflowCtx).
-	// CRUCIALLY, create a *new* registry for nodes defined *within* this workflow.
-	// BasePath is the execution path of this workflow node itself (now unique).
+	// This new context scopes the execution of nodes defined *within* the workflow handler.
+	// It gets its own registry but inherits other properties from the parent context.
+	// Its BasePath is the unique path of this workflow executioner instance.
 	handlerCtx := Context{
-		ctx:       we.workflowCtx.ctx, // Inherit cancellable context
-		nodeCount: we.workflowCtx.nodeCount,
-		store:     we.workflowCtx.store,
-		uuid:      we.workflowCtx.uuid,
-		registry:  newExecutionRegistry(), // New registry for this scope!
-		BasePath:  we.execPath,            // Base path for nodes defined inside (unique path)
-		cancel:    we.workflowCtx.cancel,  // Inherit cancel func
+		ctx:      we.workflowCtx.ctx,     // Inherit cancellable Go context.
+		store:    we.workflowCtx.store,   // Inherit store instance.
+		uuid:     we.workflowCtx.uuid,    // Inherit workflow run UUID.
+		registry: newExecutionRegistry(), // Create a NEW registry for this workflow's scope.
+		BasePath: we.execPath,            // Set BasePath to this workflow's unique path.
+		cancel:   we.workflowCtx.cancel,  // Inherit cancel function.
 	}
 
 	// --- Execute the Handler Function ---
-	// The handler defines the internal graph and returns the handle to the final node.
-	finalNodeHandle := we.resolver.handler(handlerCtx, workflowInput) // Pass input value directly
+	// The handler defines the internal graph structure and returns a handle to the final node.
+	finalNodeHandle := we.resolver.handler(handlerCtx, workflowInput)
 
+	// Handle cases where the handler returns nil (invalid).
 	if finalNodeHandle == nil {
-		// Use unique path in error
 		we.resultErr = fmt.Errorf("workflow handler returned a nil final node handle (workflow path: %s)", we.execPath)
 		we.resultOut = *new(Out)
 		return
 	}
 
 	// --- Resolve Final Node's Output ---
-	// Use internalResolve with the *workflow's specific context* (handlerCtx)
-	// to trigger execution of the final node and its dependencies within the workflow's scope.
+	// Use internalResolve with the workflow's specific context (handlerCtx) to trigger
+	// the execution of the graph defined within the handler.
 	finalValue, execErr := internalResolve[Out](handlerCtx, finalNodeHandle)
 
-	// Store the final result or error in the workflowExecutioner handle.
+	// Store the final result or error from the workflow's internal graph.
 	we.resultErr = execErr
 	if execErr == nil {
-		we.resultOut = finalValue // Store the successfully resolved value
+		we.resultOut = finalValue // Store the successfully resolved value.
 	} else {
-		we.resultOut = *new(Out) // Ensure zero value on error
+		we.resultOut = *new(Out) // Ensure zero value on error.
 	}
 
 	// Check for context cancellation after resolution but before signalling done.
+	// If the context was cancelled but no specific node error occurred, report the context error.
 	if handlerCtx.Err() != nil && we.resultErr == nil {
-		// If the context was cancelled but no other error occurred, report the context error.
-		// Avoid overwriting a more specific execution error.
-		// Use unique path in error
 		we.resultErr = fmt.Errorf("workflow context cancelled or timed out for %s: %w", we.execPath, handlerCtx.Err())
 	}
 }
 
+// Compile-time check for workflowExecutioner.
 var _ executioner = (*workflowExecutioner[any, any])(nil)
 
-// --- Dummy/Error Executioner ---
-// Used for nodes that fail initialization or for 'into' nodes if needed.
-// <<< Accepts unique path >>>
+// dummyExecutioner is a minimal implementation of `executioner` used for
+// "into" nodes (created via Into/IntoError) or for representing initialization errors.
+// It holds a pre-defined value or error and completes immediately.
 type dummyExecutioner struct {
-	path  NodePath // Unique path
+	path  NodePath // The unique path assigned.
 	value any
 	err   error
-	done  chan struct{}
+	done  chan struct{} // Closed immediately on creation.
 }
 
-// <<< Accepts unique path >>>
+// newErrorExecutioner creates a dummyExecutioner that holds only an error.
+// Used when node initialization fails or creation encounters an error.
 func newErrorExecutioner(path NodePath, err error) executioner {
 	d := &dummyExecutioner{path: path, value: nil, err: err, done: make(chan struct{})}
-	close(d.done)
+	close(d.done) // Signal completion immediately.
 	return d
 }
 
-func (d *dummyExecutioner) getResult() (any, error)       { return d.value, d.err }
-func (d *dummyExecutioner) InternalDone() <-chan struct{} { return d.done }
-func (d *dummyExecutioner) getNodePath() NodePath         { return d.path } // Returns unique path
+// getResult implements executioner, returning the stored value/error.
+func (d *dummyExecutioner) getResult() (any, error) { return d.value, d.err }
 
+// InternalDone implements executioner, returning the already closed channel.
+func (d *dummyExecutioner) InternalDone() <-chan struct{} { return d.done }
+
+// getNodePath implements executioner, returning the assigned unique path.
+func (d *dummyExecutioner) getNodePath() NodePath { return d.path }
+
+// Compile-time check for dummyExecutioner.
 var _ executioner = (*dummyExecutioner)(nil)

@@ -11,20 +11,31 @@ import (
 	"sync/atomic"
 	"time"
 
-	"heart/store" // Keep store import
+	"heart/store"
 
-	"github.com/google/uuid" // Keep uuid import
+	"github.com/google/uuid"
 )
 
 // --- Core Identifiers ---
+
+// NodeID represents the user-defined identifier for a node *blueprint*
+// (NodeDefinition) within its definition scope (e.g., top-level or inside a workflow).
+// It forms part of the unique NodePath during execution.
 type NodeID string
+
+// NodePath represents the unique, slash-separated path to a specific node
+// *instance* within a workflow execution graph. It includes the base NodeIDs
+// and instance counters (e.g., "/workflowA:#0/nodeB:#1/subNodeC:#0").
 type NodePath string
 
-// WorkflowUUID alias remains the same.
+// WorkflowUUID is an alias for uuid.UUID, representing the unique identifier
+// for a specific workflow execution run.
 type WorkflowUUID = uuid.UUID
 
-// JoinPath Joins NodePath and NodeID/uniqueSegment correctly.
-// Handles slashes and edge cases like root path.
+// JoinPath combines a base NodePath with a segment (NodeID, NodePath, or string)
+// to create a new NodePath. It handles path separators correctly.
+// For example, JoinPath("/wf", NodeID("node")) yields "/wf/node".
+// JoinPath("/", NodePath("node:#0")) yields "/node:#0".
 func JoinPath(base NodePath, segment any) NodePath {
 	baseStr := string(base)
 	var segmentStr string
@@ -32,23 +43,25 @@ func JoinPath(base NodePath, segment any) NodePath {
 	switch s := segment.(type) {
 	case NodeID:
 		segmentStr = string(s)
-	case NodePath: // Allow passing NodePath segments (like the unique "ID:#Instance")
+	case NodePath: // Allow joining path segments directly (e.g., "nodeA:#0").
 		segmentStr = string(s)
 	case string:
 		segmentStr = s
 	default:
+		// Panic because this indicates a programming error within the framework.
 		panic(fmt.Sprintf("JoinPath received unsupported segment type: %T", segment))
 	}
 
+	// Ensure base path ends with a slash if it's not the root.
 	if baseStr != "/" && !strings.HasSuffix(baseStr, "/") {
 		baseStr += "/"
 	}
-	// path.Join cleans up slashes, but might remove leading slash if base is "/"
+	// Use path.Join for cleaning, but it might remove the leading slash if base is "/".
 	joined := path.Join(baseStr, segmentStr)
-	// Ensure leading slash if base was root, unless result is just "."
+	// Restore leading slash if necessary.
 	if base == "/" && !strings.HasPrefix(joined, "/") && joined != "." {
 		return NodePath("/" + joined)
-	} else if joined == "." && base == "/" { // Handle joining "" or "." to root
+	} else if joined == "." && base == "/" { // Handle joining empty/dot segment to root.
 		return "/"
 	}
 	return NodePath(joined)
@@ -56,323 +69,392 @@ func JoinPath(base NodePath, segment any) NodePath {
 
 // --- Execution Handle (Unified for Nodes and Workflows) ---
 
-// ExecutionHandle represents a handle to a lazily-initialized execution instance
-// of a NodeDefinition (atomic node or workflow).
+// ExecutionHandle represents a reference to a potentially uninitialized and
+// unevaluated instance of a node or workflow defined by a NodeDefinition.
+// It acts as a lazy pointer to the eventual result. Handles are connected
+// together to form the execution graph.
+//
+// The internal methods are used by the framework's execution logic (like
+// internalResolve and the executionRegistry) and should not be called directly
+// by user code.
 type ExecutionHandle[Out any] interface {
+	// zero is a marker method used for type inference with generics.
 	zero(Out)
+	// heartHandle is an internal marker method for identifying heart handles.
 	heartHandle()
-	internal_getPath() NodePath // <<< Will return the unique path once resolved
-	// internal_getDefinition returns the underlying NodeDefinition blueprint (as any).
-	// Should return a type that implements definitionGetter.
+	// internal_getPath returns the unique NodePath assigned to this specific
+	// execution instance once it has been resolved by the framework. Before
+	// resolution, it may return a temporary or unresolved path.
+	internal_getPath() NodePath
+	// internal_getDefinition returns the underlying NodeDefinition blueprint
+	// (as any) that this handle corresponds to. The returned value should
+	// implement the internal definitionGetter interface. Returns nil for
+	// handles created via Into() or IntoError().
 	internal_getDefinition() any
-	internal_getInputSource() any // Returns ExecutionHandle[In] as any, or nil
-	internal_out() (any, error)   // Used by 'into' nodes primarily
-	internal_setPath(NodePath)    // <<< Sets the unique path during internalResolve
+	// internal_getInputSource returns the ExecutionHandle that provides the input
+	// for this handle's execution, returned as 'any'. Returns nil if the node
+	// takes no input or is a source node (like Into).
+	internal_getInputSource() any
+	// internal_out is used primarily by 'into' nodes (created via Into/IntoError)
+	// to provide their direct value or error. Standard nodes/workflows return an error.
+	internal_out() (any, error)
+	// internal_setPath is called by the framework (specifically internalResolve)
+	// to assign the final, unique NodePath to this handle instance during execution.
+	internal_setPath(NodePath)
 }
 
 // --- Node Definition (Unified for Atomic Nodes and Workflows) ---
 
-// NodeDefinition represents a blueprint for an *atomic* or *composite* (workflow) executable.
-// Created via DefineNode. It holds the NodeID and the NodeResolver.
-// <<< Contains the instanceCounter internally (via *definition) >>>
+// NodeDefinition represents a reusable blueprint for an executable unit within
+// the Heart framework. This unit can be an *atomic* node (defined via DefineNode
+// with a user-provided NodeResolver) or a *composite* workflow (defined via
+// WorkflowFromFunc or NewNode).
+//
+// NodeDefinitions are typically created once during setup and then used via their
+// Start() method within workflow handlers or NewNode functions to create specific
+// ExecutionHandles representing instances in the execution graph.
+//
+// The internal methods are used by the framework and should not be called directly.
 type NodeDefinition[In, Out any] interface {
-	heartDef() // Internal marker method.
-
-	// Start performs the initial setup for an execution instance. LAZY.
-	// Runs DI checks via performInitialization. Each call creates a handle
-	// that will eventually resolve to a unique instance path.
+	// Start creates a new ExecutionHandle representing a potential instance of this
+	// node definition. It takes a handle (`inputSource`) providing the input value.
+	// Start is LAZY; it does not trigger execution immediately. It performs
+	// initialization checks (like dependency injection) and returns a handle
+	// that can be passed to other nodes or resolved later. Each call to Start
+	// conceptually represents a new potential instance in the graph.
 	Start(inputSource ExecutionHandle[In]) ExecutionHandle[Out]
-	// internal_GetNodeID returns the BASE ID assigned at definition time.
+	// internal_GetNodeID returns the base NodeID assigned to this definition
+	// when it was created (e.g., via DefineNode or WorkflowFromFunc). This is
+	// distinct from the full NodePath of an execution instance.
 	internal_GetNodeID() NodeID
-
-	// Note: ExecutionCreator is NO LONGER embedded here.
-	// The definitionGetter interface (used internally) provides access to the resolver.
 }
 
 // --- Supporting Types ---
+
+// NodeInitializer is an interface implemented by types returned from a
+// NodeResolver's Init() method. It's used during the initialization phase
+// primarily for dependency injection.
 type NodeInitializer interface {
+	// ID returns the NodeTypeID associated with the node resolver. This ID is used
+	// by the dependency injection system to find the correct dependency instance.
 	ID() NodeTypeID
 }
+
+// NodeTypeID is a string identifier used to associate node types with their
+// specific dependencies during dependency injection.
 type NodeTypeID string
 
+// InOut is a simple generic struct holding an input and output value.
+// Currently unused but kept for potential future use cases.
 type InOut[In, Out any] struct {
 	In  In
 	Out Out
 }
 
-// Context struct (remains the same)
+// Context carries execution-scoped information throughout a workflow run.
+// It provides access to the underlying Go context (for cancellation),
+// the storage interface, the workflow's unique ID, the execution registry
+// for the current scope, the current execution path, and the workflow's
+// cancellation function. It's passed to WorkflowHandlerFunc and NewNode functions.
 type Context struct {
-	ctx       context.Context
-	nodeCount *atomic.Int64
-	store     store.Store
-	uuid      WorkflowUUID
-	registry  *executionRegistry // Registry is per-workflow-instance
-	BasePath  NodePath           // The current path within the execution graph (includes parent instance IDs)
-	cancel    context.CancelFunc // Cancel func for the *workflow instance*
+	// ctx is the standard Go context, used for deadlines and cancellation signals.
+	ctx context.Context
+	// nodeCount is an atomic counter used for generating unique IDs within the run.
+	nodeCount *atomic.Int64 // Kept for potential future use, currently pathing relies on instance counters.
+	// store provides access to the persistence layer (e.g., MemoryStore, FileStore).
+	store store.Store
+	// uuid is the unique identifier for this specific workflow execution run.
+	uuid WorkflowUUID
+	// registry manages executioner instances for the current scope (workflow or NewNode).
+	registry *executionRegistry
+	// BasePath is the NodePath prefix for nodes defined within this context.
+	// It includes the unique paths of parent workflows/nodes.
+	BasePath NodePath
+	// cancel is the function to call to cancel this workflow instance's context.
+	cancel context.CancelFunc
 }
 
-// Context methods remain the same...
-func (c Context) Done() <-chan struct{}                   { return c.ctx.Done() }
-func (c Context) Err() error                              { return c.ctx.Err() }
-func (c Context) Value(key any) any                       { return c.ctx.Value(key) }
+// Done mirrors the context.Context Done method.
+func (c Context) Done() <-chan struct{} { return c.ctx.Done() }
+
+// Err mirrors the context.Context Err method.
+func (c Context) Err() error { return c.ctx.Err() }
+
+// Value mirrors the context.Context Value method.
+func (c Context) Value(key any) any { return c.ctx.Value(key) }
+
+// Deadline mirrors the context.Context Deadline method.
 func (c Context) Deadline() (deadline time.Time, ok bool) { return c.ctx.Deadline() }
 
+// safeAssert provides a type-safe assertion without causing a panic on failure.
 func safeAssert[T any](val any) (T, bool) {
 	typedVal, ok := val.(T)
 	return typedVal, ok
 }
 
 // --- Future (Used by FanIn) ---
-// (Remains the same as previous correct version)
+
+// Future represents the result of an asynchronous operation within a NewNode
+// function, specifically used by FanIn. It allows waiting for a dependency
+// node's execution to complete and retrieving its result or error.
 type Future[Out any] struct {
-	exec       executioner // Holds the executioner for the *specific instance*
-	resultOnce sync.Once
-	resultVal  Out
-	resultErr  error
-	doneCh     chan struct{}
+	// exec holds the specific executioner instance this future is waiting for.
+	exec       executioner
+	resultOnce sync.Once     // Ensures the background resolution runs only once.
+	resultVal  Out           // Stores the resolved value.
+	resultErr  error         // Stores the resolved error.
+	doneCh     chan struct{} // Closed when the result is available.
 }
 
-// <<< exec now refers to a specific instance executioner >>>
+// newFuture creates a new Future associated with a specific executioner instance.
+// It starts a background goroutine to resolve the executioner's result.
 func newFuture[Out any](exec executioner) *Future[Out] {
 	f := &Future[Out]{exec: exec, doneCh: make(chan struct{})}
 	go f.resolveInBackground()
 	return f
 }
 
+// resolveInBackground waits for the associated executioner to complete via getResult,
+// performs type assertion, stores the result/error, and closes the done channel.
 func (f *Future[Out]) resolveInBackground() {
 	f.resultOnce.Do(func() {
-		// getResult retrieves the result for the specific instance path
+		// Retrieve the result from the specific executioner instance.
 		resultAny, execErr := f.exec.getResult()
 		f.resultErr = execErr
 		if execErr == nil {
+			// Perform type assertion if execution succeeded.
 			typedVal, ok := resultAny.(Out)
 			if !ok {
-				// Use the unique path in error message
+				// Capture type assertion errors.
 				f.resultErr = fmt.Errorf("Future: type assertion failed: expected %T, got %T (for path: %s)", *new(Out), resultAny, f.exec.getNodePath())
-				f.resultVal = *new(Out)
+				f.resultVal = *new(Out) // Ensure zero value on error.
 			} else {
 				f.resultVal = typedVal
 			}
 		} else {
-			f.resultVal = *new(Out)
+			f.resultVal = *new(Out) // Ensure zero value on error.
 		}
-		close(f.doneCh)
+		close(f.doneCh) // Signal completion.
 	})
 }
 
-func (f *Future[Out]) Get() (Out, error)     { <-f.doneCh; return f.resultVal, f.resultErr }
+// Get blocks until the Future's result is available and returns the value and error.
+func (f *Future[Out]) Get() (Out, error) { <-f.doneCh; return f.resultVal, f.resultErr }
+
+// Done returns a channel that is closed when the Future's result is ready.
 func (f *Future[Out]) Done() <-chan struct{} { return f.doneCh }
-func (f *Future[Out]) Out() (Out, error)     { return f.Get() }
+
+// Out is an alias for Get().
+func (f *Future[Out]) Out() (Out, error) { return f.Get() }
 
 // --- NewNodeContext ---
-// (Remains the same)
+
+// NewNodeContext is the context provided to the function passed to NewNode.
+// It embeds the standard Context, allowing access to the workflow's execution
+// state and enabling the definition of further nodes within the NewNode scope.
 type NewNodeContext struct {
-	Context // Embed the standard workflow context
+	Context // Embed the standard workflow context.
 }
 
 // --- FanIn ---
-// (Remains the same as previous correct version)
-// <<< Resolves the specific handle instance, then gets its executioner >>>
+
+// FanIn is used within a NewNode function to wait for a dependency represented by
+// an ExecutionHandle. It triggers the resolution of the dependency handle (if not
+// already started) and returns a Future that will yield the dependency's result
+// or error once available.
+//
+// FanIn ensures that dependencies defined within a NewNode are resolved using the
+// correct execution context and registry associated with that NewNode instance.
 func FanIn[Out any](ctx NewNodeContext, dep ExecutionHandle[Out]) *Future[Out] {
 	if dep == nil {
+		// Return an immediately resolved future with an error if the handle is nil.
 		f := &Future[Out]{doneCh: make(chan struct{}), resultErr: errors.New("FanIn called with nil dependency handle")}
 		close(f.doneCh)
 		return f
 	}
 	if ctx.registry == nil {
-		// Use the unique path (if resolved) or base path in error
+		// This indicates an internal setup error.
 		errMsg := fmt.Sprintf("internal error: FanIn called with invalid context (nil registry) for node base path '%s' (wf: %s)", ctx.BasePath, ctx.uuid)
 		f := &Future[Out]{doneCh: make(chan struct{}), resultErr: errors.New(errMsg)}
 		close(f.doneCh)
 		return f
 	}
 
-	// internalResolve will determine the unique path for the 'dep' handle instance
-	// and trigger its execution if needed.
+	// Trigger resolution of the dependency handle using its defining context (ctx.Context).
+	// internalResolve calculates the unique path, finds/creates the executioner,
+	// and triggers execution if necessary. It returns the final value/error.
 	resolvedValue, resolveErr := internalResolve[Out](ctx.Context, dep)
 	if resolveErr != nil {
-		// resolveErr should contain the unique path info
+		// If resolution itself failed, return a future resolved with that error.
 		f := &Future[Out]{doneCh: make(chan struct{}), resultErr: resolveErr, resultVal: *new(Out)}
 		close(f.doneCh)
 		return f
 	}
 
-	// Get the unique path that was assigned to the handle during resolution
+	// Get the unique path assigned to the handle during resolution.
 	depPath := dep.internal_getPath()
 	if depPath == "" || strings.HasPrefix(string(depPath), "/_runtime/unresolved") {
-		// This shouldn't happen if internalResolve succeeded without error
+		// Should not happen if internalResolve succeeded without error.
 		errMsg := fmt.Sprintf("internal error: FanIn could not get resolved path for dependency (wf: %s, base path: %s)", ctx.uuid, ctx.BasePath)
 		f := &Future[Out]{doneCh: make(chan struct{}), resultErr: errors.New(errMsg), resultVal: *new(Out)}
 		close(f.doneCh)
 		return f
 	}
 
-	// Retrieve the specific executioner instance using its unique path
+	// Retrieve the specific executioner instance using its unique path from the registry.
 	execInstance := ctx.registry.getExecutioner(depPath)
 	if execInstance == nil {
-		// If resolution succeeded but no executioner found (e.g., 'into' node),
-		// return a future that resolves immediately with the value.
-		// This handles cases where the dependency might be a direct value (Into).
+		// Handle edge cases like 'Into' nodes which resolve directly without a standard executioner.
+		// Return a future immediately resolved with the value obtained from internalResolve.
 		f := &Future[Out]{doneCh: make(chan struct{}), resultErr: nil, resultVal: resolvedValue}
 		close(f.doneCh)
 		return f
 	}
 
-	// Create a future tied to that specific executioner instance
+	// Create and return a future tied to the specific executioner instance.
 	futureResult := newFuture[Out](execInstance)
 	return futureResult
 }
 
 // --- 'Into' Nodes ---
-// (Remains the same as previous correct version)
-// <<< Path might be made more specific by internalResolve >>>
+
+// into is the internal implementation of ExecutionHandle used for handles created
+// via Into() and IntoError(). It holds a direct value or error.
 type into[Out any] struct {
 	val  Out
 	err  error
-	path NodePath // Initial path, might be updated by internalResolve
+	path NodePath // Path assigned by internalResolve if used within a context.
 }
 
-func (i *into[Out]) zero(Out)     {}
+// zero implements ExecutionHandle.
+func (i *into[Out]) zero(Out) {}
+
+// heartHandle implements ExecutionHandle.
 func (i *into[Out]) heartHandle() {}
+
+// internal_getPath implements ExecutionHandle. Returns a default path or one set by internalResolve.
 func (i *into[Out]) internal_getPath() NodePath {
-	if i.path == "" { // Default path if not set by internalResolve
+	if i.path == "" {
 		if i.err != nil {
 			return "/_source/intoError"
 		}
 		return "/_source/intoValue"
 	}
-	return i.path // Return potentially updated path
+	return i.path
 }
-func (i *into[Out]) internal_getDefinition() any  { return nil }
+
+// internal_getDefinition implements ExecutionHandle. Returns nil as 'into' nodes have no definition.
+func (i *into[Out]) internal_getDefinition() any { return nil }
+
+// internal_getInputSource implements ExecutionHandle. Returns nil as 'into' nodes have no input source.
 func (i *into[Out]) internal_getInputSource() any { return nil }
-func (i *into[Out]) internal_out() (any, error)   { return i.val, i.err }
-func (i *into[Out]) internal_setPath(p NodePath)  { i.path = p } // Allow path update
-func Into[Out any](val Out) ExecutionHandle[Out]  { return &into[Out]{val: val, err: nil} }
+
+// internal_out implements ExecutionHandle. Returns the stored value and error.
+func (i *into[Out]) internal_out() (any, error) { return i.val, i.err }
+
+// internal_setPath implements ExecutionHandle. Allows the framework to assign a more specific path.
+func (i *into[Out]) internal_setPath(p NodePath) { i.path = p }
+
+// Into creates an ExecutionHandle that immediately resolves to the provided value.
+// Useful for injecting static data or results from outside the Heart framework
+// into the execution graph.
+func Into[Out any](val Out) ExecutionHandle[Out] { return &into[Out]{val: val, err: nil} }
+
+// IntoError creates an ExecutionHandle that immediately resolves to the provided error.
+// Useful for injecting pre-existing errors or terminating a graph branch.
 func IntoError[Out any](err error) ExecutionHandle[Out] {
 	if err == nil {
+		// Ensure a non-nil error is always provided.
 		err = errors.New("IntoError called with nil error")
 	}
 	return &into[Out]{val: *new(Out), err: err}
 }
 
+// Compile-time check for ExecutionHandle implementation.
 var _ ExecutionHandle[any] = (*into[any])(nil)
 
 // --- NewNode ---
-// (Remains the same as previous correct version)
-// The definition created here will have its own instanceCounter.
-type newNodeResolver[In, Out any] struct { // Note: newNodeResolver takes In type now for consistency
+
+// newNodeResolver is the internal NodeResolver implementation for nodes created
+// with NewNode. It wraps the user-provided function.
+type newNodeResolver[In, Out any] struct { // Takes In type for resolver consistency.
 	fun    func(ctx NewNodeContext) ExecutionHandle[Out]
-	nodeID NodeID // ID of the NewNode definition itself
+	nodeID NodeID // Base NodeID of the NewNode definition.
 }
+
+// genericNodeInitializer is a simple NodeInitializer used for internal node types
+// like workflows and NewNode wrappers that don't require specific dependency injection.
 type genericNodeInitializer struct{ id NodeTypeID }
 
+// ID implements NodeInitializer.
 func (g genericNodeInitializer) ID() NodeTypeID { return g.id }
+
+// Init implements NodeResolver for newNodeResolver.
 func (r *newNodeResolver[In, Out]) Init() NodeInitializer {
 	return genericNodeInitializer{id: "system:newNodeWrapper"}
 }
 
-// Get is called by the nodeExecution wrapper for the NewNode definition instance.
-func (r *newNodeResolver[In, Out]) Get(runCtx context.Context, in In) (Out, error) { // Added In param
-	// Construct the context for the *inner* graph execution.
-	// BasePath uses the unique path of the NewNode wrapper instance.
-	// newNodeInstancePath := JoinPath(r.defCtx.BasePath, r.nodeID) // <<< PROBLEM: This needs the instance ID!
-	// ^^^ CORRECTION: The *actual* unique path is passed via `execPath` to `createExecution`,
-	// and stored on the `nodeExecution` instance for the wrapper.
-	// The `Get` method runs *within* that execution context. We need the unique path from there.
-	// This suggests `Get` needs access to the execution context/path, or NewNode needs redesign.
-
-	// --- TEMPORARY WORKAROUND (Less Ideal): Reconstruct path based on captured context ---
-	// This assumes NewNode's execution context's BasePath *is* the unique path.
-	// This relies on how workflowExecutioner/nodeExecution sets up the context.
-	// Let's assume wfCtx passed to createExecution becomes the basis for this Get call's context.
-	// We need the unique path of the *wrapper node* itself.
-
-	// Revisit this: How does `Get` know its own unique execution path?
-	// The current node_execution doesn't pass the execPath to the Get method.
-	// Option 1: Pass execPath via context.Value (prone to errors).
-	// Option 2: Modify NodeResolver.Get signature (breaking change).
-	// Option 3: Assume defCtx.BasePath IS the unique path of the wrapper (fragile assumption based on current execution flow).
-	// Let's proceed with Option 3 for now, acknowledging its fragility.
-
-	// Assume r.defCtx contains the parent's unique BasePath, and r.nodeID is the base ID.
-	// The unique path of the wrapper was determined *before* its executioner was created.
-	// Let's pass the unique path via the defCtx when creating the resolver.
-	// --> This means NewNode needs the unique path *at definition time*, which breaks laziness.
-
-	// --- Backtrack: Simpler Approach ---
-	// The `nodeExecution` for the `newNodeResolver` *has* the unique `execPath`.
-	// Let the context passed to `fun` use *that* unique path as its `BasePath`.
-	// `newNodeResolver.Get` needs access to its own `nodeExecution` instance or its `execPath`.
-
-	// --- Redesign `newNodeResolver.Get` or how context is passed ---
-	// Let's try modifying the call site in `nodeExecution.execute` slightly to pass context.
-	// This is getting complex. Sticking to the user's original code structure for now.
-	// The context created below *should* inherit the correct unique BasePath
-	// if the `wfCtx` passed to `createExecution` (and thus to `newExecution` for the wrapper)
-	// has the correct parent path, and if `JoinPath` is used correctly when `NewNode` defines the wrapper.
-
-	// Let's stick to the original `NewNode` implementation detail where the context's BasePath
-	// becomes the JOINED path. If `NewNode` is called inside a workflow instance `wf:/A:#0`,
-	// and defines a node `nn:B`, the BasePath for `fun` should be `/A:#0/B`.
-	// The `newNodeResolver` itself doesn't need the instance ID part for the *inner* context path calculation.
-
+// Get implements NodeResolver for newNodeResolver. This method is executed when
+// the NewNode *wrapper* node runs. It sets up the NewNodeContext, calls the
+// user's function to define the subgraph, and then resolves the subgraph's result.
+func (r *newNodeResolver[In, Out]) Get(runCtx context.Context, in In) (Out, error) { // Added In param.
+	// Retrieve the runtime heart Context and unique execution path, which were added
+	// to the Go context (`runCtx`) by the nodeExecution wrapper before calling Get.
 	runtimeWfCtx, okWfCtx := runCtx.Value(heartContextKey{}).(Context)
 	runtimeExecPath, okExecPath := runCtx.Value(execPathKey{}).(NodePath)
 
 	if !okWfCtx || !okExecPath {
-		// This indicates an internal error, likely nodeExecution didn't wrap the context correctly.
+		// This signifies an internal framework error in context propagation.
 		return *new(Out), fmt.Errorf("internal error: NewNode (%s) couldn't retrieve runtime context/path via context.Value. WfCtxOK: %v, ExecPathOK: %v", r.nodeID, okWfCtx, okExecPath)
-		// Using panic might be appropriate here as it signifies a programming error in the framework.
-		// panic(fmt.Sprintf("internal error: NewNode (%s) couldn't retrieve runtime context/path via context.Value", r.nodeID))
 	}
 
+	// Construct the NewNodeContext for the user function.
+	// Crucially, it uses a *new* executionRegistry scoped to this NewNode instance,
+	// and its BasePath is the unique path of the NewNode wrapper itself.
 	newNodeCtx := NewNodeContext{
 		Context: Context{
-			// Standard Go Context handling: Pass the received context down.
-			// It contains cancellation signals and potentially other values.
-			ctx: runCtx,
-
-			// Core Heart Context fields: Use values from the *runtime* context.
-			nodeCount: runtimeWfCtx.nodeCount, // Use runtime atomic counter
-			store:     runtimeWfCtx.store,     // Use runtime store instance
-			uuid:      runtimeWfCtx.uuid,      // Use runtime workflow UUID
-			registry:  runtimeWfCtx.registry,  // <<< Use runtime registry instance
-			cancel:    runtimeWfCtx.cancel,    // Use runtime cancel function
-
-			// BasePath for the subgraph: Use the unique execution path of *this* NewNode wrapper.
-			BasePath: runtimeExecPath, // <<< Use runtime unique execPath of the wrapper node
+			ctx:       runCtx,                 // Pass down the Go context.
+			nodeCount: runtimeWfCtx.nodeCount, // Use runtime atomic counter.
+			store:     runtimeWfCtx.store,     // Use runtime store instance.
+			uuid:      runtimeWfCtx.uuid,      // Use runtime workflow UUID.
+			registry:  runtimeWfCtx.registry,  // <<< Use the runtime registry for this scope!
+			cancel:    runtimeWfCtx.cancel,    // Use runtime cancel function.
+			BasePath:  runtimeExecPath,        // Base path for nodes defined inside is the wrapper's unique path.
 		},
 	}
 
 	// --- Execute the User Function ---
-	// fmt.Printf("DEBUG: heart.NewNode (%s) executing user function with BasePath: %s\n", r.nodeID, newNodeCtx.BasePath) // Optional debug log
-	subGraphHandle := r.fun(newNodeCtx) // Calls user func with CORRECT context
+	// This call defines the subgraph by returning a handle to its final node.
+	subGraphHandle := r.fun(newNodeCtx)
 	if subGraphHandle == nil {
-		// Use the correct BasePath (the unique path of the wrapper) in the error.
+		// The user function must return a valid handle.
 		return *new(Out), fmt.Errorf("NewNode function for '%s' returned nil handle", newNodeCtx.BasePath)
 	}
 
 	// --- Resolve the Subgraph ---
-	// Resolve the inner graph using the CORRECT context (newNodeCtx.Context).
-	// internalResolve will handle node creation/lookup within the subgraph using the correct registry and BasePath.
-	resolvedVal, err := internalResolve[Out](newNodeCtx.Context, subGraphHandle)
+	// Use internalResolve with the NewNodeContext to execute the subgraph.
+	// This ensures nodes within the subgraph are resolved relative to the correct
+	// BasePath and use the correct registry.
+	resolvedVal, err := internalResolve(newNodeCtx.Context, subGraphHandle)
 	if err != nil {
-		// Use the correct BasePath (the unique path of the wrapper) in the error context.
+		// Wrap subgraph errors with the NewNode wrapper's path for context.
 		return *new(Out), fmt.Errorf("error resolving NewNode sub-graph at '%s': %w", newNodeCtx.BasePath, err)
 	}
 	return resolvedVal, nil
 }
 
-// --- NewNode ExecutionCreator Implementation ---
-// <<< Accepts unique execPath, passes it to newExecution >>>
+// createExecution implements the ExecutionCreator interface for newNodeResolver.
+// It creates the standard nodeExecution instance that will wrap the call to the
+// newNodeResolver's Get method.
 func (r *newNodeResolver[In, Out]) createExecution(
-	execPath NodePath, // <<< Now the unique path of the NewNode wrapper instance
+	execPath NodePath, // The unique path assigned to this NewNode wrapper instance.
 	inputSourceAny any,
-	wfCtx Context, // Runtime context of the parent
-	nodeID NodeID, // Base NodeID of the NewNode wrapper
+	wfCtx Context, // Runtime context of the parent scope.
+	nodeID NodeID,
 	nodeTypeID NodeTypeID,
 	initializer NodeInitializer,
 ) (executioner, error) {
+	// Assert the input handle type.
 	var inputHandle ExecutionHandle[In]
 	if inputSourceAny != nil {
 		var ok bool
@@ -381,22 +463,32 @@ func (r *newNodeResolver[In, Out]) createExecution(
 			return nil, fmt.Errorf("internal error: type assertion failed for newNode input source handle for %s: expected ExecutionHandle[%T], got %T", execPath, *new(In), inputSourceAny)
 		}
 	}
-	// Use newExecution for the newNode wrapper itself, passing the unique path
+	// Create a standard node executioner using the newNodeResolver itself as the resolver.
+	// Pass the unique execution path.
 	ne := newExecution(
 		inputHandle,
-		wfCtx,    // <<< Pass the correct runtime context
-		execPath, // <<< Pass unique path
+		wfCtx,    // Pass the correct runtime context.
+		execPath, // Pass the unique path for this wrapper instance.
 		nodeTypeID,
 		initializer,
-		r, // Pass the resolver itself
+		r, // The newNodeResolver is the resolver for the wrapper execution.
 	)
 	return ne, nil
 }
 
+// Compile-time checks for newNodeResolver interfaces.
 var _ NodeResolver[any, any] = (*newNodeResolver[any, any])(nil)
 var _ ExecutionCreator = (*newNodeResolver[any, any])(nil)
 
-// <<< NewNode defines a standard node whose resolver executes the user function >>>
+// NewNode creates an ExecutionHandle for a dynamically defined subgraph.
+// The provided function `fun` is executed lazily when the handle returned by
+// NewNode is resolved (e.g., via FanIn or Execute). The function receives a
+// NewNodeContext, which allows defining nodes scoped within the NewNode instance.
+// The function must return an ExecutionHandle representing the final output of the subgraph.
+//
+// `ctx`: The Context from the scope where NewNode is called (e.g., a workflow handler).
+// `nodeID`: A NodeID unique within the calling scope for this NewNode instance.
+// `fun`: The function that defines the subgraph.
 func NewNode[Out any](ctx Context, nodeID NodeID, fun func(ctx NewNodeContext) ExecutionHandle[Out]) ExecutionHandle[Out] {
 	if fun == nil {
 		panic("heart.NewNode requires a non-nil function")
@@ -404,79 +496,109 @@ func NewNode[Out any](ctx Context, nodeID NodeID, fun func(ctx NewNodeContext) E
 	if nodeID == "" {
 		panic("heart.NewNode requires a non-empty node ID")
 	}
-	// Use struct{} as input type for the wrapper node
-	// Create resolver, only storing the function and nodeID. Runtime context comes later.
-	resolver := &newNodeResolver[struct{}, Out]{fun: fun, nodeID: nodeID} // REMOVED defCtx
+	// Create the internal resolver. Use struct{} as the placeholder input type for the wrapper node.
+	resolver := &newNodeResolver[struct{}, Out]{fun: fun, nodeID: nodeID}
 
-	// Define the wrapper node. This definition gets its own instanceCounter.
-	nodeDefinition := DefineNode[struct{}, Out](nodeID, resolver)
+	// Define the wrapper node blueprint using the standard DefineNode.
+	// This definition gets its own instance counter.
+	nodeDefinition := DefineNode(nodeID, resolver)
 
-	// Start the wrapper node. This creates a handle.
-	// The handle doesn't have its unique path *yet*.
+	// Start the wrapper node, creating its handle. Input is a dummy struct{}.
+	// The handle doesn't have its final unique path assigned yet.
 	wrapperHandle := nodeDefinition.Start(Into(struct{}{}))
 
-	// The handle returned here will have its path set correctly when internalResolve is called on it.
+	// Return the handle to the wrapper. Its path will be set, and its 'Get' method
+	// (which executes 'fun' and resolves the subgraph) will be called when this
+	// handle is resolved by the framework.
 	return wrapperHandle
 }
 
 // --- Execute (Top-Level Trigger) ---
-// (Remains the same as previous correct version)
+
+// Execute is the primary entry point for running a Heart workflow or node graph.
+// It takes a Go context for cancellation, a handle to the final node/workflow
+// of the graph, and optional WorkflowOptions (like WithStore, WithUUID).
+//
+// It initializes the execution context, including a unique workflow run UUID
+// and an execution registry, and then triggers the lazy resolution of the
+// provided handle using internalResolve. It waits for the entire graph connected
+// to the handle to complete and returns the final output value or any error
+// encountered during execution.
 func Execute[Out any](ctx context.Context, handle ExecutionHandle[Out], opts ...WorkflowOption) (Out, error) {
-	var zero Out
+	var zero Out // Zero value for error returns.
 	if handle == nil {
 		return zero, errors.New("Execute called with a nil handle")
 	}
+
+	// Apply workflow options, setting defaults for store and UUID.
 	options := workflowOptions{store: defaultStore, uuid: WorkflowUUID(uuid.New())}
 	for _, opt := range opts {
 		opt(&options)
 	}
 	if options.store == nil {
-		panic("Execute requires a non-nil store")
+		panic("Execute requires a non-nil store (default or provided via WithStore)")
 	}
+
+	// Create the cancellable Go context for this specific execution run.
 	execCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	defer cancel() // Ensure cancellation propagates if Execute returns early.
+
+	// Create the graph record in the store.
 	graphErr := options.store.Graphs().CreateGraph(execCtx, options.uuid.String())
 	if graphErr != nil {
+		// If using WithExistingUUID, this might indicate the UUID is already in use.
 		return zero, fmt.Errorf("failed to create graph record for workflow %s: %w", options.uuid, graphErr)
 	}
+
+	// Initialize the root execution Context.
 	rootWorkflowCtx := Context{
 		ctx:       execCtx,
-		nodeCount: &atomic.Int64{},
+		nodeCount: &atomic.Int64{}, // Shared counter (currently unused by path generation).
 		store:     options.store,
 		uuid:      options.uuid,
-		registry:  newExecutionRegistry(), // Fresh registry for the run
-		BasePath:  "/",                    // Root execution starts at "/"
-		cancel:    cancel,
+		registry:  newExecutionRegistry(), // A fresh registry for this run.
+		BasePath:  "/",                    // Root execution starts at path "/".
+		cancel:    cancel,                 // Pass the cancel function.
 	}
 
-	// internalResolve will calculate the initial unique path for the top-level handle
-	result, err := internalResolve[Out](rootWorkflowCtx, handle)
+	// Start the recursive resolution process from the root handle.
+	result, err := internalResolve(rootWorkflowCtx, handle)
 
+	// Check if the execution context was cancelled or timed out, even if no specific
+	// node error occurred during resolution.
 	if err == nil && execCtx.Err() != nil {
 		err = fmt.Errorf("execution context cancelled or timed out: %w", execCtx.Err())
 	}
 
-	// TODO: Persist final graph state (e.g., success/failure)?
+	// TODO: Persist final graph status (e.g., success/failure) in the store?
 
 	return result, err
 }
 
 // --- Internal context keys ---
-// Used to pass runtime heart.Context and execPath via context.Value
-// from nodeExecution to newNodeResolver.Get without changing interfaces.
+
+// heartContextKey is used as a key for context.WithValue to pass the runtime heart.Context.
 type heartContextKey struct{}
+
+// execPathKey is used as a key for context.WithValue to pass the unique runtime NodePath.
 type execPathKey struct{}
 
 // --- Workflow Options ---
-// (Remains the same)
+
+// defaultStore is the store used if WithStore is not provided to Execute.
 var defaultStore store.Store = store.NewMemoryStore()
 
+// workflowOptions holds configuration settings for a workflow execution run.
 type workflowOptions struct {
 	store store.Store
 	uuid  WorkflowUUID
 }
+
+// WorkflowOption defines the signature for functions that modify workflowOptions.
 type WorkflowOption func(*workflowOptions)
 
+// WithStore provides a specific storage implementation (e.g., FileStore)
+// to be used for the workflow run, overriding the default MemoryStore.
 func WithStore(store store.Store) WorkflowOption {
 	return func(wo *workflowOptions) {
 		if store == nil {
@@ -485,7 +607,15 @@ func WithStore(store store.Store) WorkflowOption {
 		wo.store = store
 	}
 }
+
+// WithUUID provides a specific UUID to be used for the workflow run identifier.
+// If not provided, a new UUID is generated automatically.
 func WithUUID(id WorkflowUUID) WorkflowOption { return func(wo *workflowOptions) { wo.uuid = id } }
+
+// WithExistingUUID provides a specific UUID (as a string) to be used for the
+// workflow run identifier. It panics if the string is not a valid UUID format.
+// Useful for resuming or identifying specific runs. Ensure the UUID is unique
+// or the storage layer can handle potential collisions if resuming.
 func WithExistingUUID(id string) WorkflowOption {
 	parsedUUID, err := uuid.Parse(id)
 	if err != nil {

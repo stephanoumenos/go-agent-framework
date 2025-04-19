@@ -2,36 +2,43 @@
 package middleware
 
 import (
-	"encoding/json" // For unmarshalling the LLM response
+	"encoding/json"
 	"errors"
 	"fmt"
-	"heart" // Use heart's core types and functions
+	"heart"
 
 	openai "github.com/sashabaranov/go-openai"
-	"github.com/sashabaranov/go-openai/jsonschema" // For schema generation
+	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 // Errors related to structured output processing.
 var (
-	errNilNextNodeDef           = errors.New("WithStructuredOutput requires a non-nil nextNodeDef")
+	// errStructuredOutputNilNextNodeDef indicates WithStructuredOutput was called with a nil nextNodeDef.
+	errStructuredOutputNilNextNodeDef = errors.New("WithStructuredOutput requires a non-nil nextNodeDef")
+	// errDuplicatedResponseFormat indicates the input ChatCompletionRequest already had ResponseFormat set.
 	errDuplicatedResponseFormat = errors.New("response format already provided in the request")
-	errNoContentFromLLM         = errors.New("no content received from LLM response")
-	errSchemaGenerationFailed   = errors.New("failed to generate JSON schema")
-	errParsingFailed            = errors.New("failed to parse LLM response")
+	// errNoContentFromLLM indicates the LLM response (after potential modification) had no content.
+	errNoContentFromLLM = errors.New("no content received from LLM response")
+	// errSchemaGenerationFailed indicates failure during JSON schema generation for the target type.
+	errSchemaGenerationFailed = errors.New("failed to generate JSON schema")
+	// errParsingFailed indicates failure when unmarshalling the LLM's response content into the target struct.
+	errParsingFailed = errors.New("failed to parse LLM response")
 )
 
-// structuredOutputNodeTypeID is the type identifier for the structured output workflow node.
+// structuredOutputNodeID is the NodeID used for the node definition created by WithStructuredOutput.
 const structuredOutputNodeID heart.NodeID = "openai_structured_output"
 
-// structuredOutputHandler generates the core logic function for the structured output workflow.
+// structuredOutputHandler generates the core WorkflowHandlerFunc for the structured output workflow.
 // It captures the 'next' node definition (the actual LLM call) to be used during execution.
+// The resulting handler modifies the request to enforce JSON Schema output based on SOut,
+// executes the nextNodeDef, and then parses the LLM response into SOut.
 func structuredOutputHandler[SOut any](
 	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
 ) heart.WorkflowHandlerFunc[openai.ChatCompletionRequest, SOut] {
 	// This is the function that will be executed when the workflow runs.
 	return func(ctx heart.Context, originalReq openai.ChatCompletionRequest) heart.ExecutionHandle[SOut] {
 		if nextNodeDef == nil {
-			return heart.IntoError[SOut](errNilNextNodeDef)
+			return heart.IntoError[SOut](errStructuredOutputNilNextNodeDef)
 		}
 
 		// 1. Prepare a zero value of the target struct SOut for schema generation
@@ -54,21 +61,21 @@ func structuredOutputHandler[SOut any](
 		modifiedReq.ResponseFormat = &openai.ChatCompletionResponseFormat{
 			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
 			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
-				Name:   "output", // This name likely needs to match instruction in prompt
+				Name:   "output", // This name MUST be referenced in the system prompt.
 				Schema: schema,
-				Strict: true,
+				// Strict mode might be configurable in the future.
+				// Strict: true, // TODO: Consider making strict mode configurable.
 			},
 		}
-		// It's crucial to instruct the model in the prompt to return JSON matching the desired structure.
-		// e.g., add a system message: "You MUST respond ONLY with a JSON object matching the following schema: <schema description or reference>"
+		// IMPORTANT: The prompt (usually system message) MUST instruct the model
+		// to return JSON matching the schema, referencing the schema name ("output").
 
 		// 4. Start the execution of the *next* node (the actual LLM call) using the modified request.
-		// Use the workflow's context (ctx) for correct pathing and registry scope.
 		llmNodeHandle := nextNodeDef.Start(heart.Into(modifiedReq))
 
 		// 5. Define a final node using NewNode to parse the LLM response.
 		// This node depends on the llmNodeHandle completing successfully.
-		parserNodeID := heart.NodeID("parse_structured_response") // Local ID for the parsing node
+		parserNodeID := heart.NodeID("parse_structured_response") // Local ID for the parsing node within the workflow.
 		parserNode := heart.NewNode(
 			ctx,          // Use the workflow's context
 			parserNodeID, // Assign ID
@@ -77,7 +84,8 @@ func structuredOutputHandler[SOut any](
 				llmResponseFuture := heart.FanIn(parseCtx, llmNodeHandle)
 				llmResponse, err := llmResponseFuture.Get() // Blocks until the LLM call completes
 				if err != nil {
-					// Error already happened in the LLM node, just propagate it.
+					// Error already happened in the LLM node, just propagate it, potentially adding context.
+					// Error will already contain the failing node's path.
 					return heart.IntoError[SOut](err)
 				}
 
@@ -112,24 +120,35 @@ func structuredOutputHandler[SOut any](
 	}
 }
 
-// WithStructuredOutput defines a NodeDefinition that enforces structured JSON output.
-// It wraps another NodeDefinition (typically an OpenAI call) and modifies the request
-// to ask for JSON output, then parses the result into the specified SOut type.
+// WithStructuredOutput defines a NodeDefinition that enforces structured JSON output
+// based on a provided Go struct type `SOut`.
+//
+// It wraps another NodeDefinition (`nextNodeDef`, typically an OpenAI chat completion node)
+// and performs the following steps:
+//  1. Generates a JSON schema based on the provided `SOut` type.
+//  2. Modifies the incoming `openai.ChatCompletionRequest` to include the generated
+//     schema in the `ResponseFormat` field, instructing the model to output JSON.
+//     *Important*: The system prompt in the request *must* explicitly instruct the
+//     model to generate JSON conforming to the schema named "output".
+//  3. Executes the wrapped `nextNodeDef` with the modified request.
+//  4. Parses the resulting `openai.ChatCompletionResponse`'s content string into
+//     an instance of the `SOut` struct.
+//
+// The resulting NodeDefinition takes an `openai.ChatCompletionRequest` as input
+// and produces an `SOut` struct as output.
 //
 // Parameters:
 //   - nextNodeDef: The NodeDefinition of the LLM call node to wrap (e.g., openai.CreateChatCompletion).
+//     It must take `openai.ChatCompletionRequest` as input and produce `openai.ChatCompletionResponse`.
 //
 // Returns:
-//
-//	A NodeDefinition that takes an openai.ChatCompletionRequest as input and produces
-//	an SOut struct as output.
+//   - A NodeDefinition that takes an `openai.ChatCompletionRequest` as input and produces
+//     an `SOut` struct as output, encapsulating the structured output logic.
 func WithStructuredOutput[SOut any](nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) heart.NodeDefinition[openai.ChatCompletionRequest, SOut] {
-
 	// Generate the handler function, capturing the nextNodeDef.
 	handler := structuredOutputHandler[SOut](nextNodeDef)
 
 	// Define and return the NodeDefinition for this structured output workflow.
-	// Use the structuredOutputNodeTypeID as the underlying type identifier.
-
+	// Use the structuredOutputNodeID as the underlying type identifier.
 	return heart.WorkflowFromFunc(structuredOutputNodeID, handler)
 }

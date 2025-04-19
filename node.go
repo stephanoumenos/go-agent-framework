@@ -2,10 +2,9 @@
 package heart
 
 import (
-	// "context" // No longer needed here
 	"context"
 	"fmt"
-	"sync/atomic" // <<< Add this import
+	"sync/atomic"
 )
 
 // --- Node Definition (Atomic / Wrapper) ---
@@ -26,8 +25,6 @@ type definition[In, Out any] struct {
 	initErr         error           // Stores error from DI phase
 	instanceCounter atomic.Uint64   // <<< NEW: Counter for instance IDs
 }
-
-func (d *definition[In, Out]) heartDef() {}
 
 // Start creates the execution handle. LAZY.
 // It runs the initialization/DI phase for the resolver.

@@ -2,34 +2,42 @@
 package openai
 
 import (
-	// remove context import if ClientInterface doesn't need it directly here
 	"heart"
-	"heart/nodes/openai/clientiface" // <-- IMPORT the new interface package
+	"heart/nodes/openai/clientiface"
 	"heart/nodes/openai/internal"
 
-	"github.com/mark3labs/mcp-go/client"
-	// openaimiddleware "heart/nodes/openai/middleware"
-	// Don't need the main openai import here if ClientInterface is defined elsewhere
-	// openai "github.com/sashabaranov/go-openai"
+	mcpclient "github.com/mark3labs/mcp-go/client"
 )
 
-// Inject now accepts the interface from the new package
-func Inject(client clientiface.ClientInterface) heart.DependencyInjector { // Use clientiface.ClientInterface
-	// Adjust type arguments for NodesDependencyInject
-	return heart.NodesDependencyInject( // Use clientiface.ClientInterface
+// Inject creates a DependencyInjector for the OpenAI client.
+// It takes an object implementing the clientiface.ClientInterface (like a real
+// *openai.Client or a mock) and makes it available for injection into
+// nodes that require it, such as CreateChatCompletion.
+//
+// Use this function with heart.Dependencies during application setup.
+func Inject(client clientiface.ClientInterface) heart.DependencyInjector {
+	return heart.NodesDependencyInject(
 		client,
+		// The constructor function simply returns the provided client.
 		func(c clientiface.ClientInterface) clientiface.ClientInterface { return c },
-		// Initializers list remains the same, but they must now expect clientiface.ClientInterface
+		// List of initializers that will receive the client dependency.
 		&createChatCompletionInitializer{},
 	)
 }
 
-// No need for the ClientInterface definition here anymore
-func InjectMCPClient(_client client.MCPClient) heart.DependencyInjector {
+// InjectMCPClient creates a DependencyInjector for the MCP client.
+// It takes an object implementing the mcpclient.MCPClient interface and
+// makes it available for injection into internal nodes used by the
+// WithMCP middleware (e.g., ListTools, CallTool).
+//
+// Use this function with heart.Dependencies during application setup if using
+// the WithMCP middleware.
+func InjectMCPClient(_client mcpclient.MCPClient) heart.DependencyInjector {
 	return heart.NodesDependencyInject(
 		_client,
-		func(c client.MCPClient) client.MCPClient { return c },
-		// Initializers list remains the same, but they must now expect clientiface.ClientInterface
+		// The constructor function simply returns the provided client.
+		func(c mcpclient.MCPClient) mcpclient.MCPClient { return c },
+		// List of internal initializers that will receive the MCP client dependency.
 		&internal.CallToolInitializer{},
 		&internal.ListToolsInitializer{},
 	)

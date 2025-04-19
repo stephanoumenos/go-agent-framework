@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors" // Import errors
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
