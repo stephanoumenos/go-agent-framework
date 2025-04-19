@@ -34,10 +34,7 @@ func structuredOutputWorkflowHandler(ctx heart.Context, recipeTopic string) hear
 	// 2. Wrap the LLM node with WithStructuredOutput.
 	// The middleware will modify the request to ask for JSON matching the Recipe struct
 	// and parse the response into the Recipe struct.
-	structuredOutputNodeDef := openaimw.WithStructuredOutput[Recipe](
-		"parse_recipe_output", // Node ID for the structured output middleware instance
-		llmNodeDef,            // The next node definition (the LLM call)
-	)
+	structuredOutputNodeDef := openaimw.WithStructuredOutput[Recipe](llmNodeDef)
 
 	// 3. Prepare the initial request for the wrapped node.
 	// It's crucial to instruct the LLM to provide JSON matching the schema.

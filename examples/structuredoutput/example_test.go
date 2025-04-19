@@ -212,7 +212,7 @@ func TestStructuredOutputWorkflowIntegration_LLMError(t *testing.T) {
 	// Check that the error originates from the LLM call (wrapped by the parsing node)
 	require.ErrorContains(t, err, "simulated API error")
 	// Check that the error message includes the path of the failing parsing node within the middleware structure
-	require.ErrorContains(t, err, "parse_recipe_output:#0/parse_structured_response")
+	require.ErrorContains(t, err, "openai_structured_output:#0/parse_structured_response")
 
 	// Lock before accessing shared state for assertion
 	mockClient.callsMtx.Lock()
@@ -261,7 +261,7 @@ func TestStructuredOutputWorkflowIntegration_ParsingError(t *testing.T) {
 	require.ErrorContains(t, err, "failed to parse LLM response") // Check for the specific error from middleware
 	require.ErrorContains(t, err, "failed to unmarshal LLM content into main.Recipe")
 	// Check that the error message includes the path of the failing parsing node
-	require.ErrorContains(t, err, "parse_recipe_output:#0/parse_structured_response")
+	require.ErrorContains(t, err, "openai_structured_output:#0/parse_structured_response")
 
 	// Lock before accessing shared state for assertion
 	mockClient.callsMtx.Lock()

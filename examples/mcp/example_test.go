@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"heart"
 	"heart/mcp"
-	"heart/nodes/openai" // Required for InjectMCPClient
+	"heart/nodes/openai"
 	"heart/store"
 	"log"
 	"net/http/httptest"
@@ -17,7 +17,7 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcpschema "github.com/mark3labs/mcp-go/mcp" // Alias to avoid collision
+	mcpschema "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"

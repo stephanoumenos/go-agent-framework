@@ -9,7 +9,7 @@ import (
 	"heart/nodes/openai"
 	openaimw "heart/nodes/openai/middleware"
 	"heart/store"
-	"log" // Added for server logging if needed
+	"log"
 
 	"net/http/httptest"
 	"os"
@@ -17,13 +17,12 @@ import (
 	"strings"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcpschema "github.com/mark3labs/mcp-go/mcp" // Alias to avoid collision
+	mcpschema "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	goopenai "github.com/sashabaranov/go-openai"
 )
 
 // --- Structs, Interfaces, Node Definitions (AddInput, AddOutput, addNodeResolver, etc.) remain the same ---
-// --- ... (Keep the code from Section 1 & 2: DefineAddNode, addToolSchema, mapToolRequest, mapToolResponse) ... ---
 
 // Input/Output structs for our simple adder tool
 type AddInput struct {
@@ -135,7 +134,7 @@ func mapToolResponse(ctx context.Context, out AddOutput) (*mcpschema.CallToolRes
 // --- 4. Main Workflow Definition (remains the same) ---
 func mainWorkflowHandler(ctx heart.Context, prompt string) heart.ExecutionHandle[goopenai.ChatCompletionResponse] {
 	llmNodeDef := openai.CreateChatCompletion("base_llm_call")
-	mcpNodeDef := openaimw.WithMCP("mcp_tool_adder", llmNodeDef)
+	mcpNodeDef := openaimw.WithMCP(llmNodeDef)
 	request := goopenai.ChatCompletionRequest{
 		Model: goopenai.GPT4oMini,
 		Messages: []goopenai.ChatCompletionMessage{
@@ -246,7 +245,7 @@ func main() {
 	fmt.Printf("\n--- Executing Workflow ---\nInput Prompt: \"%s\"\n", inputPrompt)
 
 	workflowHandle := mainWorkflowDef.Start(heart.Into(inputPrompt))
-	fileStore, err := store.NewFileStore("workflows")
+	fileStore, err := store.NewFileStore("workflows_mcp")
 	if err != nil {
 		log.Fatalf("error setting up file store: %v", fileStore)
 	}
@@ -297,8 +296,6 @@ func main() {
 				fmt.Println("  Hint: The model requested further tool calls after the initial one.")
 			}
 		}
-
-		// Optional: Check if the tool was actually called by inspecting workflow data - skipped for simplicity
 
 		fmt.Println("--- End Assertions ---")
 		if !success {

@@ -13,6 +13,7 @@ import (
 
 // Errors related to structured output processing.
 var (
+	errNilNextNodeDef           = errors.New("WithStructuredOutput requires a non-nil nextNodeDef")
 	errDuplicatedResponseFormat = errors.New("response format already provided in the request")
 	errNoContentFromLLM         = errors.New("no content received from LLM response")
 	errSchemaGenerationFailed   = errors.New("failed to generate JSON schema")
@@ -20,7 +21,7 @@ var (
 )
 
 // structuredOutputNodeTypeID is the type identifier for the structured output workflow node.
-const structuredOutputNodeTypeID heart.NodeTypeID = "openai_structured_output"
+const structuredOutputNodeID heart.NodeID = "openai_structured_output"
 
 // structuredOutputHandler generates the core logic function for the structured output workflow.
 // It captures the 'next' node definition (the actual LLM call) to be used during execution.
@@ -29,6 +30,9 @@ func structuredOutputHandler[SOut any](
 ) heart.WorkflowHandlerFunc[openai.ChatCompletionRequest, SOut] {
 	// This is the function that will be executed when the workflow runs.
 	return func(ctx heart.Context, originalReq openai.ChatCompletionRequest) heart.ExecutionHandle[SOut] {
+		if nextNodeDef == nil {
+			return heart.IntoError[SOut](errNilNextNodeDef)
+		}
 
 		// 1. Prepare a zero value of the target struct SOut for schema generation
 		// and check for pre-existing ResponseFormat (which would be an error).
@@ -113,23 +117,13 @@ func structuredOutputHandler[SOut any](
 // to ask for JSON output, then parses the result into the specified SOut type.
 //
 // Parameters:
-//   - nodeID: A unique identifier for this specific instance of the structured output workflow.
 //   - nextNodeDef: The NodeDefinition of the LLM call node to wrap (e.g., openai.CreateChatCompletion).
 //
 // Returns:
 //
 //	A NodeDefinition that takes an openai.ChatCompletionRequest as input and produces
 //	an SOut struct as output.
-func WithStructuredOutput[SOut any](
-	nodeID heart.NodeID, // User-provided ID for this workflow instance.
-	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
-) heart.NodeDefinition[openai.ChatCompletionRequest, SOut] { // Input: Request, Output: SOut
-	if nodeID == "" {
-		panic("WithStructuredOutput requires a non-empty nodeID")
-	}
-	if nextNodeDef == nil {
-		panic("WithStructuredOutput requires a non-nil nextNodeDef")
-	}
+func WithStructuredOutput[SOut any](nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) heart.NodeDefinition[openai.ChatCompletionRequest, SOut] {
 
 	// Generate the handler function, capturing the nextNodeDef.
 	handler := structuredOutputHandler[SOut](nextNodeDef)
@@ -137,5 +131,5 @@ func WithStructuredOutput[SOut any](
 	// Define and return the NodeDefinition for this structured output workflow.
 	// Use the structuredOutputNodeTypeID as the underlying type identifier.
 
-	return heart.WorkflowFromFunc(nodeID, handler)
+	return heart.WorkflowFromFunc(structuredOutputNodeID, handler)
 }

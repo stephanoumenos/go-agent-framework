@@ -12,14 +12,15 @@ import (
 	// MCP client interface is implicitly required via DI for internal nodes
 )
 
+const mcpWorkflowID heart.NodeID = "openai_mcp"
+
 var (
 	errMaxIterationsReached = errors.New("maximum tool invocation iterations reached")
 )
 
 const (
 	// maxToolIterations limits the number of LLM <-> Tool rounds to prevent infinite loops.
-	// Reduced to 5 from default 10 for potentially faster debugging if it occurs.
-	maxToolIterations = 5
+	maxToolIterations = 10
 )
 
 // mcpWorkflowHandler defines the core logic for the WithMCP middleware using heart nodes,
@@ -27,9 +28,13 @@ const (
 // It orchestrates the flow: List Tools -> (Loop: LLM Call -> Process Response -> Maybe Call Tools -> Update History).
 func mcpWorkflowHandler(
 	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse], // The wrapped LLM call node definition
-	listToolsNodeDef heart.NodeDefinition[struct{}, internal.ListToolsResult], // Definition for listing tools
-	callToolNodeDef heart.NodeDefinition[internal.CallToolInput, internal.CallToolOutput], // Definition for calling a tool
 ) heart.WorkflowHandlerFunc[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
+	// Define the internal node *blueprints* needed by the workflow handler ONCE.
+	// Use specific IDs based on the middleware instance's nodeID to avoid conflicts
+	// if the same middleware is used multiple times in a workflow.
+	listToolsNodeDef := internal.ListTools()
+	callToolNodeDef := internal.CallTool()
+
 	// This is the function that will be executed declaratively when the workflow node runs.
 	return func(ctx heart.Context, originalReq openai.ChatCompletionRequest) heart.ExecutionHandle[openai.ChatCompletionResponse] {
 
@@ -272,25 +277,15 @@ func mcpWorkflowHandler(
 
 // WithMCP function creates the middleware node definition.
 func WithMCP(
-	nodeID heart.NodeID,
 	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
 ) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
-	if nodeID == "" {
-		panic("WithMCP requires a non-empty nodeID")
-	}
 	if nextNodeDef == nil {
 		panic("WithMCP requires a non-nil nextNodeDef")
 	}
 
-	// Define the internal node *blueprints* needed by the workflow handler ONCE.
-	// Use specific IDs based on the middleware instance's nodeID to avoid conflicts
-	// if the same middleware is used multiple times in a workflow.
-	listToolsNodeDef := internal.DefineListToolsNode(heart.NodeID(fmt.Sprintf("%s_listTools", nodeID)))
-	callToolNodeDef := internal.DefineCallToolNode(heart.NodeID(fmt.Sprintf("%s_callTool", nodeID)))
-
 	// Create the specific workflow handler function, capturing the necessary node definitions.
-	handler := mcpWorkflowHandler(nextNodeDef, listToolsNodeDef, callToolNodeDef)
+	handler := mcpWorkflowHandler(nextNodeDef)
 
 	// Create and return the workflow definition for this middleware instance.
-	return heart.WorkflowFromFunc(nodeID, handler)
+	return heart.WorkflowFromFunc(mcpWorkflowID, handler)
 }

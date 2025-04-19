@@ -15,6 +15,7 @@ import (
 
 // Define a unique NodeTypeID for this internal node
 const ListToolsNodeTypeID heart.NodeTypeID = "openai_mcp_middleware:listTools"
+const ListToolsNodeID heart.NodeID = "openai_list_tools"
 
 // listToolsResult holds the results from listing tools.
 // We need both OpenAI format for the request and MCP format for invocation details.
@@ -122,9 +123,9 @@ func (r *listToolsResolver) Get(ctx context.Context, _ struct{}) (ListToolsResul
 	}, nil
 }
 
-// DefineListToolsNode creates the NodeDefinition for listing MCP tools.
-func DefineListToolsNode(nodeID heart.NodeID) heart.NodeDefinition[struct{}, ListToolsResult] {
-	return heart.DefineNode[struct{}, ListToolsResult](nodeID, &listToolsResolver{})
+// ListTools creates the NodeDefinition for listing MCP tools.
+func ListTools() heart.NodeDefinition[struct{}, ListToolsResult] {
+	return heart.DefineNode(ListToolsNodeID, &listToolsResolver{})
 }
 
 // --- Compile-time checks ---

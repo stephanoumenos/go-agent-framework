@@ -16,7 +16,8 @@ import (
 )
 
 // Define a unique NodeTypeID for this internal node
-const CallToolNodeTypeID heart.NodeTypeID = "openai_mcp_middleware:callTool"
+const CallToolNodeTypeID heart.NodeTypeID = "openai_mcp_middleware:call_tool"
+const CallToolNodeID heart.NodeID = "call_tool"
 
 var (
 	errUnsupportedToolCallType = errors.New("unsupported tool call type in response")
@@ -227,9 +228,9 @@ func (r *callToolResolver) Get(ctx context.Context, in CallToolInput) (CallToolO
 	return CallToolOutput{ResultMsg: resultMsg}, nil
 }
 
-// DefineCallToolNode creates the NodeDefinition for calling a single MCP tool.
-func DefineCallToolNode(nodeID heart.NodeID) heart.NodeDefinition[CallToolInput, CallToolOutput] {
-	return heart.DefineNode[CallToolInput, CallToolOutput](nodeID, &callToolResolver{})
+// CallTool creates the NodeDefinition for calling a single MCP tool.
+func CallTool() heart.NodeDefinition[CallToolInput, CallToolOutput] {
+	return heart.DefineNode(CallToolNodeID, &callToolResolver{})
 }
 
 // --- Compile-time checks ---
