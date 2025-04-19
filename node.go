@@ -5,6 +5,7 @@ import (
 	// "context" // No longer needed here
 	"context"
 	"fmt"
+	"sync/atomic" // <<< Add this import
 )
 
 // --- Node Definition (Atomic / Wrapper) ---
@@ -18,17 +19,19 @@ type NodeResolver[In, Out any] interface {
 // definition implements NodeDefinition. It holds the configuration but does
 // not create the executioner itself directly. It implements definitionGetter.
 type definition[In, Out any] struct {
-	nodeID      NodeID // Store the ID assigned at definition time
-	resolver    NodeResolver[In, Out]
-	nodeTypeID  NodeTypeID      // Determined during init/DI
-	initializer NodeInitializer // Determined during init/DI
-	initErr     error           // Stores error from DI phase
+	nodeID          NodeID // Store the ID assigned at definition time
+	resolver        NodeResolver[In, Out]
+	nodeTypeID      NodeTypeID      // Determined during init/DI
+	initializer     NodeInitializer // Determined during init/DI
+	initErr         error           // Stores error from DI phase
+	instanceCounter atomic.Uint64   // <<< NEW: Counter for instance IDs
 }
 
 func (d *definition[In, Out]) heartDef() {}
 
 // Start creates the execution handle. LAZY.
 // It runs the initialization/DI phase for the resolver.
+// <<< No changes needed here >>>
 func (d *definition[In, Out]) Start(inputSource ExecutionHandle[In]) ExecutionHandle[Out] {
 	// Run DI checks immediately on definition.Start - fail early if possible.
 	// Store the result (or error) in the definition itself.
@@ -42,7 +45,7 @@ func (d *definition[In, Out]) Start(inputSource ExecutionHandle[In]) ExecutionHa
 	n := &node[In, Out]{
 		d:           d, // Pass the concrete definition which implements definitionGetter
 		inputSource: inputSource,
-		// path is initially empty
+		// path is initially empty; will be set by internalResolve with instance ID
 	}
 	return n
 }
@@ -57,9 +60,17 @@ func (d *definition[In, Out]) internal_GetNodeTypeID() NodeTypeID       { return
 func (d *definition[In, Out]) internal_GetInitializer() NodeInitializer { return d.initializer }
 func (d *definition[In, Out]) internal_GetInitError() error             { return d.initErr }
 
+// internal_GetNextInstanceID atomically increments the counter and returns the ID
+// for the *next* instance (0, 1, 2,...).
+func (d *definition[In, Out]) internal_GetNextInstanceID() uint64 {
+	// AddUint64 returns the *new* value, so subtract 1 to get the ID sequence 0, 1, 2...
+	return d.instanceCounter.Add(1) - 1
+}
+
 // internal_createNodeExecution creates the standard node execution instance.
 // This method is called by the registry via the definitionGetter interface.
 // It knows the concrete types In and Out.
+// <<< Accepts unique execPath >>>
 func (d *definition[In, Out]) internal_createNodeExecution(execPath NodePath, inputSourceAny any, wfCtx Context) (executioner, error) {
 	// Type assertion for inputSourceAny is needed here, where 'In' is known.
 	var inputHandle ExecutionHandle[In]
@@ -79,7 +90,7 @@ func (d *definition[In, Out]) internal_createNodeExecution(execPath NodePath, in
 	ne := newExecution[In, Out](
 		inputHandle, // Correctly typed handle
 		wfCtx,
-		execPath,
+		execPath,      // <<< Pass the unique path received
 		d.nodeTypeID,  // From definition
 		d.initializer, // From definition
 		d.resolver,    // Correctly typed resolver
@@ -134,7 +145,7 @@ type node[In, Out any] struct {
 	// Store the concrete *definition[In, Out] which implements definitionGetter.
 	d           *definition[In, Out]
 	inputSource ExecutionHandle[In]
-	path        NodePath // Path assigned at runtime by internalResolve
+	path        NodePath // Path assigned at runtime by internalResolve (will be unique)
 }
 
 func (n *node[In, Out]) zero(Out)     {}
@@ -143,11 +154,12 @@ func (n *node[In, Out]) internal_getPath() NodePath {
 	if n.path == "" {
 		// Provide a more useful temporary path if available
 		if n.d != nil {
+			// Before instance ID is assigned, return temporary path based on NodeID only
 			return NodePath("/_runtime/unresolved_" + string(n.d.internal_GetNodeID()))
 		}
 		return "/_runtime/unresolved_unknown" // Fallback
 	}
-	return n.path
+	return n.path // Returns the unique path once set by internalResolve
 }
 func (n *node[In, Out]) internal_getDefinition() any  { return n.d } // Return the concrete *definition
 func (n *node[In, Out]) internal_getInputSource() any { return n.inputSource }
@@ -160,9 +172,12 @@ func (n *node[In, Out]) internal_setPath(p NodePath) { n.path = p }
 // --- Compile-time checks ---
 var _ ExecutionHandle[any] = (*node[any, any])(nil)
 var _ NodeDefinition[any, any] = (*definition[any, any])(nil)
-var _ definitionGetter = (*definition[any, any])(nil) // Ensure definition implements the getter interface
+
+// Ensure definition implements the extended getter interface
+var _ definitionGetter = (*definition[any, any])(nil)
 
 // --- DefineNode function ---
+// <<< No changes needed here >>>
 func DefineNode[In, Out any](nodeID NodeID, resolver NodeResolver[In, Out]) NodeDefinition[In, Out] {
 	if nodeID == "" {
 		panic("DefineNode requires a non-empty node ID")
@@ -174,6 +189,7 @@ func DefineNode[In, Out any](nodeID NodeID, resolver NodeResolver[In, Out]) Node
 		nodeID:   nodeID,
 		resolver: resolver,
 		// nodeTypeID, initializer, initErr are populated by Start() -> performInitialization()
+		// instanceCounter is zero-initialized automatically
 	}
 	return def
 }

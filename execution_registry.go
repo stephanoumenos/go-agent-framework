@@ -11,21 +11,21 @@ import (
 // *** Implemented by INTERNAL NodeResolvers like workflowResolver and newNodeResolver ***.
 type ExecutionCreator interface {
 	// createExecution creates the specific executioner instance (nodeExecution or workflowExecutioner).
-	// It takes the runtime execution path, input source handle (as any), workflow context,
-	// node ID, type ID, and the initialized NodeInitializer.
+	// It takes the runtime execution path (NOW UNIQUE), input source handle (as any), workflow context,
+	// node ID (BASE ID), type ID, and the initialized NodeInitializer.
 	createExecution(
-		execPath NodePath,
+		execPath NodePath, // <<< Now the unique path including instance ID
 		inputSourceAny any,
 		wfCtx Context,
-		nodeID NodeID, // Added: Passed down from definition
-		nodeTypeID NodeTypeID, // Added: Passed down from definition's init phase
-		initializer NodeInitializer, // Added: Passed down from definition's init phase
+		nodeID NodeID, // Base NodeID (without instance ID)
+		nodeTypeID NodeTypeID,
+		initializer NodeInitializer,
 	) (executioner, error)
 }
 
 // executionRegistry manages executioner instances for nodes and workflows within a single run.
 type executionRegistry struct {
-	executions map[NodePath]executioner
+	executions map[NodePath]executioner // <<< Key is the unique NodePath
 	mu         sync.Mutex
 }
 
@@ -33,7 +33,7 @@ type executionRegistry struct {
 type executioner interface {
 	getResult() (any, error)
 	InternalDone() <-chan struct{}
-	getNodePath() NodePath
+	getNodePath() NodePath // Returns the unique path
 }
 
 // newExecutionRegistry creates a new registry.
@@ -42,6 +42,7 @@ func newExecutionRegistry() *executionRegistry {
 }
 
 // definitionGetter defines an interface specifically for getting the Resolver and Initializer state from a definition.
+// <<< Added internal_GetNextInstanceID >>>
 type definitionGetter interface {
 	internal_GetNodeID() NodeID
 	internal_GetResolver() any // Returns the NodeResolver instance (as any)
@@ -50,14 +51,16 @@ type definitionGetter interface {
 	internal_GetInitError() error // Get error captured during definition.Start()
 	// ADDED: Method to create the standard node executioner
 	internal_createNodeExecution(execPath NodePath, inputSourceAny any, wfCtx Context) (executioner, error)
+	internal_GetNextInstanceID() uint64 // <<< NEW: Method to get instance ID
 }
 
 // getOrCreateExecution finds or creates the executioner instance for a handle.
 // Called lazily by internalResolve.
-// The handle's path MUST be set before calling this.
-func getOrCreateExecution[Out any](r *executionRegistry, handle ExecutionHandle[Out], wfCtx Context) executioner {
-	nodePath := handle.internal_getPath()
-	if nodePath == "" || strings.HasPrefix(string(nodePath), "/_runtime/unresolved") || strings.HasPrefix(string(nodePath), "/_source/") {
+// The nodePath provided MUST be the final, unique path for the instance.
+// <<< Signature Changed: Accepts unique nodePath, passes handle >>>
+func getOrCreateExecution[Out any](r *executionRegistry, nodePath NodePath, handle ExecutionHandle[Out], wfCtx Context) executioner {
+	// Path uniqueness/validity checks (optional, but good)
+	if nodePath == "" || strings.HasPrefix(string(nodePath), "/_runtime/unresolved") {
 		// Allow /_source/ prefix for 'into' nodes handled later
 		if !strings.HasPrefix(string(nodePath), "/_source/") {
 			panic(fmt.Sprintf("getOrCreateExecution called with unset or unresolved path: '%s'", nodePath))
@@ -67,21 +70,21 @@ func getOrCreateExecution[Out any](r *executionRegistry, handle ExecutionHandle[
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	execInstance, exists := r.executions[nodePath]
+	execInstance, exists := r.executions[nodePath] // <<< Use unique nodePath directly for lookup
 	if !exists {
 		defAny := handle.internal_getDefinition()
 		inputSourceAny := handle.internal_getInputSource()
 
 		if defAny == nil { // Handle 'into' nodes edge case
-			// Only create dummy executioner for expected source paths
 			if strings.HasPrefix(string(nodePath), "/_source/") {
 				val, err := handle.internal_out()
+				// NOTE: Ensure 'into' paths passed here are also unique if necessary,
+				// internalResolve logic seems to handle this reasonably well already.
 				dummy := &dummyExecutioner{path: nodePath, value: val, err: err, done: make(chan struct{})}
 				close(dummy.done)
-				r.executions[nodePath] = dummy
+				r.executions[nodePath] = dummy // <<< Use nodePath as key
 				return dummy
 			} else {
-				// This indicates an 'into' node path was misconfigured or used incorrectly
 				panic(fmt.Sprintf("registry: encountered nil definition for non-source path: %s", nodePath))
 			}
 		}
@@ -96,21 +99,20 @@ func getOrCreateExecution[Out any](r *executionRegistry, handle ExecutionHandle[
 		// Check for initialization errors captured during definition.Start
 		initErr := defGetter.internal_GetInitError()
 		if initErr != nil {
-			// Use the NodeID from the getter for a better error message
-			err := fmt.Errorf("node '%s' (ID: %s) failed during initialization: %w", nodePath, defGetter.internal_GetNodeID(), initErr)
+			// Use base NodeID for error message consistency, but unique path for context
+			err := fmt.Errorf("node '%s' (base ID: %s) failed during initialization: %w", nodePath, defGetter.internal_GetNodeID(), initErr)
 			errorExec := newErrorExecutioner(nodePath, err)
 			r.executions[nodePath] = errorExec // Store error exec so subsequent calls fail fast
 			return errorExec
 		}
 
-		// Get common components needed for creation (might be nil if init failed, but initErr check handles that)
+		// Get common components needed for creation
 		resolverAny := defGetter.internal_GetResolver()
 		initializer := defGetter.internal_GetInitializer()
-		nodeID := defGetter.internal_GetNodeID()
-		nodeTypeID := defGetter.internal_GetNodeTypeID()
+		nodeID := defGetter.internal_GetNodeID()         // Base NodeID for creator context if needed
+		nodeTypeID := defGetter.internal_GetNodeTypeID() // Type ID for creator
 
 		if resolverAny == nil || initializer == nil {
-			// Safeguard against nil components even if initErr was nil (shouldn't happen ideally)
 			panic(fmt.Sprintf("registry: definition for path %s returned nil resolver or initializer despite no init error", nodePath))
 		}
 
@@ -122,13 +124,14 @@ func getOrCreateExecution[Out any](r *executionRegistry, handle ExecutionHandle[
 		// (i.e., implements ExecutionCreator).
 		if creator, isCreator := resolverAny.(ExecutionCreator); isCreator {
 			// It's a workflow or newNode - use its specific createExecution method.
+			// <<< Pass the final unique nodePath directly >>>
 			newExec, err = creator.createExecution(
-				nodePath,
+				nodePath, // <<< Use final unique path
 				inputSourceAny,
 				wfCtx,
-				nodeID,      // from defGetter
-				nodeTypeID,  // from defGetter
-				initializer, // from defGetter
+				nodeID,     // Base NodeID
+				nodeTypeID, // Type ID
+				initializer,
 			)
 			// Wrap error if needed for context
 			if err != nil {
@@ -138,8 +141,9 @@ func getOrCreateExecution[Out any](r *executionRegistry, handle ExecutionHandle[
 			// It's a standard node (user-defined or lib like openai).
 			// Use the definitionGetter's specific method to create the executioner.
 			// The *definition[In, Out] implementation of this method knows the 'In' type.
+			// <<< Pass the final unique nodePath directly >>>
 			newExec, err = defGetter.internal_createNodeExecution(
-				nodePath,
+				nodePath,       // <<< Use final unique path
 				inputSourceAny, // Pass the input handle as any
 				wfCtx,
 			)
@@ -155,26 +159,27 @@ func getOrCreateExecution[Out any](r *executionRegistry, handle ExecutionHandle[
 			newExec = newErrorExecutioner(nodePath, err)
 		}
 
-		r.executions[nodePath] = newExec
+		r.executions[nodePath] = newExec // <<< Use unique nodePath as key
 		execInstance = newExec
 	}
 	return execInstance
 }
 
 // getExecutioner retrieves an existing executioner by path. Used by FanIn.
-func (r *executionRegistry) getExecutioner(path NodePath) executioner {
+func (r *executionRegistry) getExecutioner(path NodePath) executioner { // Path should be unique
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.executions[path]
+	return r.executions[path] // Look up using the unique path
 }
 
 // --- workflowExecutioner ---
 // (Implementation remains the same as previous correct version)
+// <<< Accepts unique execPath >>>
 type workflowExecutioner[In, Out any] struct {
 	resolver    *workflowResolver[In, Out] // Reference to the workflow resolver
 	inputSource ExecutionHandle[In]        // Handle for the input
 	workflowCtx Context                    // Context of the *parent* workflow/Execute call
-	execPath    NodePath                   // Execution path of this workflow instance
+	execPath    NodePath                   // Execution path of this workflow instance (NOW UNIQUE)
 
 	// Memoized result
 	resultOut Out
@@ -185,17 +190,18 @@ type workflowExecutioner[In, Out any] struct {
 	doneCh   chan struct{}
 }
 
+// <<< Accepts unique execPath >>>
 func newWorkflowExecutioner[In, Out any](
 	resolver *workflowResolver[In, Out],
 	input ExecutionHandle[In],
 	wfCtx Context,
-	execPath NodePath,
+	execPath NodePath, // <<< Now the unique path
 ) *workflowExecutioner[In, Out] {
 	return &workflowExecutioner[In, Out]{
 		resolver:    resolver,
 		inputSource: input,
-		workflowCtx: wfCtx, // Store context from where this workflow was started
-		execPath:    execPath,
+		workflowCtx: wfCtx,    // Store context from where this workflow was started
+		execPath:    execPath, // <<< Store unique path
 		doneCh:      make(chan struct{}),
 	}
 }
@@ -210,6 +216,7 @@ func (we *workflowExecutioner[In, Out]) InternalDone() <-chan struct{} {
 	return we.doneCh
 }
 
+// <<< Returns unique path >>>
 func (we *workflowExecutioner[In, Out]) getNodePath() NodePath {
 	return we.execPath
 }
@@ -222,10 +229,11 @@ func (we *workflowExecutioner[In, Out]) execute() {
 	defer func() { // Panic recovery
 		if r := recover(); r != nil {
 			// Propagate panic as error
+			// Use unique path in error
 			panicErr := fmt.Errorf("panic recovered during workflow execution for %s: %v", we.execPath, r)
 			we.resultErr = panicErr
 			we.resultOut = *new(Out)
-			// TODO: Persist workflow panic state?
+			// TODO: Persist workflow panic state? Use unique path?
 		}
 	}()
 
@@ -236,6 +244,7 @@ func (we *workflowExecutioner[In, Out]) execute() {
 		// Resolve input using the PARENT context (workflowCtx)
 		resolvedInputAny, depResolveErr := internalResolve[In](we.workflowCtx, we.inputSource)
 		if depResolveErr != nil {
+			// Use unique path in error
 			inputErr = fmt.Errorf("failed to resolve input dependency for workflow '%s': %w", we.execPath, depResolveErr)
 		} else {
 			// Assign the resolved value only if resolution was successful
@@ -255,14 +264,14 @@ func (we *workflowExecutioner[In, Out]) execute() {
 	// --- Create Execution Context for this Workflow Instance ---
 	// Inherit store, uuid, nodeCount, cancel func from parent (workflowCtx).
 	// CRUCIALLY, create a *new* registry for nodes defined *within* this workflow.
-	// BasePath is the execution path of this workflow node itself.
+	// BasePath is the execution path of this workflow node itself (now unique).
 	handlerCtx := Context{
 		ctx:       we.workflowCtx.ctx, // Inherit cancellable context
 		nodeCount: we.workflowCtx.nodeCount,
 		store:     we.workflowCtx.store,
 		uuid:      we.workflowCtx.uuid,
 		registry:  newExecutionRegistry(), // New registry for this scope!
-		BasePath:  we.execPath,            // Base path for nodes defined inside
+		BasePath:  we.execPath,            // Base path for nodes defined inside (unique path)
 		cancel:    we.workflowCtx.cancel,  // Inherit cancel func
 	}
 
@@ -271,6 +280,7 @@ func (we *workflowExecutioner[In, Out]) execute() {
 	finalNodeHandle := we.resolver.handler(handlerCtx, workflowInput) // Pass input value directly
 
 	if finalNodeHandle == nil {
+		// Use unique path in error
 		we.resultErr = fmt.Errorf("workflow handler returned a nil final node handle (workflow path: %s)", we.execPath)
 		we.resultOut = *new(Out)
 		return
@@ -293,6 +303,7 @@ func (we *workflowExecutioner[In, Out]) execute() {
 	if handlerCtx.Err() != nil && we.resultErr == nil {
 		// If the context was cancelled but no other error occurred, report the context error.
 		// Avoid overwriting a more specific execution error.
+		// Use unique path in error
 		we.resultErr = fmt.Errorf("workflow context cancelled or timed out for %s: %w", we.execPath, handlerCtx.Err())
 	}
 }
@@ -301,13 +312,15 @@ var _ executioner = (*workflowExecutioner[any, any])(nil)
 
 // --- Dummy/Error Executioner ---
 // Used for nodes that fail initialization or for 'into' nodes if needed.
+// <<< Accepts unique path >>>
 type dummyExecutioner struct {
-	path  NodePath
+	path  NodePath // Unique path
 	value any
 	err   error
 	done  chan struct{}
 }
 
+// <<< Accepts unique path >>>
 func newErrorExecutioner(path NodePath, err error) executioner {
 	d := &dummyExecutioner{path: path, value: nil, err: err, done: make(chan struct{})}
 	close(d.done)
@@ -316,6 +329,6 @@ func newErrorExecutioner(path NodePath, err error) executioner {
 
 func (d *dummyExecutioner) getResult() (any, error)       { return d.value, d.err }
 func (d *dummyExecutioner) InternalDone() <-chan struct{} { return d.done }
-func (d *dummyExecutioner) getNodePath() NodePath         { return d.path }
+func (d *dummyExecutioner) getNodePath() NodePath         { return d.path } // Returns unique path
 
 var _ executioner = (*dummyExecutioner)(nil)

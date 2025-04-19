@@ -18,9 +18,10 @@ type WorkflowHandlerFunc[In, Out any] func(ctx Context, in In) ExecutionHandle[O
 
 // --- WorkflowResolver ---
 // (Remains the same, already implements ExecutionCreator correctly)
+// The definition created from this will have its own instanceCounter.
 type workflowResolver[In, Out any] struct {
 	handler WorkflowHandlerFunc[In, Out]
-	nodeID  NodeID
+	nodeID  NodeID // Base NodeID
 }
 
 func newWorkflowResolver[In, Out any](nodeID NodeID, handler WorkflowHandlerFunc[In, Out]) NodeResolver[In, Out] {
@@ -35,27 +36,31 @@ func newWorkflowResolver[In, Out any](nodeID NodeID, handler WorkflowHandlerFunc
 
 func WorkflowFromFunc[In, Out any](nodeID NodeID, handler WorkflowHandlerFunc[In, Out]) NodeDefinition[In, Out] {
 	resolver := newWorkflowResolver(nodeID, handler)
+	// DefineNode creates the *definition which holds the instance counter
 	return DefineNode(nodeID, resolver)
 }
 
 func (r *workflowResolver[In, Out]) Init() NodeInitializer {
+	// A workflow itself doesn't usually need complex init or DI beyond its handler.
 	return genericNodeInitializer{id: "system:workflow"}
 }
+
 func (r *workflowResolver[In, Out]) Get(ctx context.Context, in In) (Out, error) {
 	// This should not be called for workflows; execution happens via workflowExecutioner.
 	// Keep the error safeguard.
+	// Use base node ID in error.
 	return *new(Out), fmt.Errorf("internal error: Get called directly on workflowResolver for node ID '%s'", r.nodeID)
 }
 
-// ExecutionCreator implementation was moved to execution_registry.go for clarity previously,
-// but conceptually it belongs to the resolver. Let's ensure it's here.
+// ExecutionCreator implementation
+// <<< Accepts unique execPath, passes it to newWorkflowExecutioner >>>
 func (r *workflowResolver[In, Out]) createExecution(
-	execPath NodePath,
+	execPath NodePath, // <<< Now the unique path for the workflow instance
 	inputSourceAny any,
-	wfCtx Context,
-	nodeID NodeID,
-	nodeTypeID NodeTypeID,
-	initializer NodeInitializer,
+	wfCtx Context, // Runtime context from parent
+	nodeID NodeID, // Base nodeID
+	nodeTypeID NodeTypeID, // Should be "system:workflow"
+	initializer NodeInitializer, // Should be genericNodeInitializer
 ) (executioner, error) {
 	var inputHandle ExecutionHandle[In]
 	if inputSourceAny != nil {
@@ -65,7 +70,9 @@ func (r *workflowResolver[In, Out]) createExecution(
 			return nil, fmt.Errorf("internal error: type assertion failed for workflow input source handle for %s: expected ExecutionHandle[%T], got %T", execPath, *new(In), inputSourceAny)
 		}
 	}
-	we := newWorkflowExecutioner[In, Out](r, inputHandle, wfCtx, execPath)
+	// Pass the unique execPath to the constructor
+	// wfCtx is the context from the *caller* of this workflow instance.
+	we := newWorkflowExecutioner[In, Out](r, inputHandle, wfCtx, execPath) // <<< Pass unique path
 	return we, nil
 }
 
@@ -81,6 +88,7 @@ type NodeIDGetter interface {
 // internalResolve triggers/retrieves the result for a given execution handle.
 // It's the core recursive function for lazy execution.
 // Called by FanIn/Future.Get, Execute, and workflowExecutioner.
+// <<< Calculates and sets the unique path before registry interaction >>>
 func internalResolve[Out any](execCtx Context, handle ExecutionHandle[Out]) (Out, error) {
 	var zero Out
 
@@ -88,45 +96,12 @@ func internalResolve[Out any](execCtx Context, handle ExecutionHandle[Out]) (Out
 		return zero, errors.New("internalResolve called with nil handle")
 	}
 
-	// --- Set Handle Path ---
-	// The path is determined by the *calling* context's BasePath and the handle's definition ID.
-	// This needs to happen before registry lookup.
-	def := handle.internal_getDefinition() // Returns 'any'
-	var currentPath NodePath
-	if def != nil {
-		// If it has a definition, construct path relative to current context.
-		// Assert to the smaller NodeIDGetter interface just to get the ID.
-		defIDCasted, ok := def.(NodeIDGetter) // <<< FIX: Assert to smaller interface
-		if !ok {
-			// This panic means the definition object doesn't even have the ID method.
-			// This would be a fundamental issue with the definition type (e.g., *definition).
-			panic(fmt.Sprintf("internal error: handle definition type %T does not implement NodeIDGetter", def))
-		}
-		nodeID := defIDCasted.internal_GetNodeID() // Get ID via the smaller interface
-		currentPath = JoinPath(execCtx.BasePath, nodeID)
-		handle.internal_setPath(currentPath)
-	} else {
-		// Handle 'into' nodes or others without definitions - use their preset path
-		currentPath = handle.internal_getPath()
-		// Ensure 'into' nodes also get context path if defined within a node
-		if strings.HasPrefix(string(currentPath), "/_source/") && execCtx.BasePath != "/" {
-			// Give 'into' node a more specific path if context provides one,
-			// appending a generic suffix. Avoids collisions if multiple Into nodes exist.
-			suffix := "value"
-			if _, intoErr := handle.internal_out(); intoErr != nil {
-				suffix = "error"
-			}
-			// Use a simple count or hash for uniqueness if needed, for now just suffix.
-			currentPath = JoinPath(execCtx.BasePath, NodeID("_into_"+suffix))
-			handle.internal_setPath(currentPath)
-		}
-	}
-
-	// --- Handle 'into' nodes directly ---
-	outAny, err := handle.internal_out()
+	// --- Handle 'into' nodes directly (before instance ID logic) ---
+	// Check if it's an 'into' node by attempting internal_out
+	outAny, outErr := handle.internal_out()
 	isNotApplicableError := false
-	if err != nil {
-		errMsg := err.Error()
+	if outErr != nil {
+		errMsg := outErr.Error()
 		// Check if it's the specific error indicating it's *not* an 'into' type node.
 		if strings.Contains(errMsg, "internal_out called on a standard node handle") ||
 			strings.Contains(errMsg, "internal_out called on a workflow handle") { // Added workflow check
@@ -134,9 +109,31 @@ func internalResolve[Out any](execCtx Context, handle ExecutionHandle[Out]) (Out
 		}
 	}
 
+	var currentPath NodePath // Will store the final unique path
+
 	if !isNotApplicableError {
-		if err != nil {
-			return zero, fmt.Errorf("error from direct handle source '%s': %w", currentPath, err) // Return error from 'into'
+		// It IS an 'into' node (or similar direct source)
+		currentPath = handle.internal_getPath() // Get its predefined path
+		// Ensure 'into' nodes also get context path if defined within a node
+		if strings.HasPrefix(string(currentPath), "/_source/") && execCtx.BasePath != "/" {
+			suffix := "value"
+			// Re-check error specifically for suffix determination
+			if _, intoErr := handle.internal_out(); intoErr != nil {
+				suffix = "error"
+			}
+			// Try to give it a unique path within the context
+			// NOTE: This simple suffix might still collide if multiple 'Into' are used sequentially
+			// within the same parent scope without intervening nodes.
+			// A counter in the Context might be needed for true uniqueness here if this becomes an issue.
+			currentPath = JoinPath(execCtx.BasePath, NodeID("_into_"+suffix))
+			// Set the potentially more specific path back onto the handle
+			handle.internal_setPath(currentPath)
+		}
+
+		// Now process the direct result using the determined path (primarily for errors)
+		if outErr != nil {
+			// Return error from 'into', using its potentially updated path
+			return zero, fmt.Errorf("error from direct handle source '%s': %w", currentPath, outErr)
 		}
 		typedOut, ok := outAny.(Out)
 		if !ok {
@@ -149,27 +146,55 @@ func internalResolve[Out any](execCtx Context, handle ExecutionHandle[Out]) (Out
 	// --- End handle 'into' nodes ---
 
 	// --- Handle standard nodes & workflows via registry ---
+	def := handle.internal_getDefinition() // Returns 'any'
+	if def == nil {
+		// Should not happen if !isNotApplicableError, but safeguard
+		// Use handle's last known path for context if available
+		panic(fmt.Sprintf("internal error: non-'into' handle returned nil definition (handle path hint: %s)", handle.internal_getPath()))
+	}
+
+	// Assert to definitionGetter to access methods, including instance ID generation
+	defGetter, ok := def.(definitionGetter)
+	if !ok {
+		panic(fmt.Sprintf("internal error: handle definition type %T does not implement definitionGetter", def))
+	}
+
+	// --- Generate Unique Path ---
+	nodeID := defGetter.internal_GetNodeID()             // Get the base NodeID (e.g., "MyNode")
+	instanceID := defGetter.internal_GetNextInstanceID() // <<< Get the unique instance ID atomically (0, 1, 2...)
+	// <<< Create "NodeID:#ID" segment >>>
+	uniqueSegment := NodePath(fmt.Sprintf("%s:#%d", nodeID, instanceID))
+	// <<< Construct final unique path relative to the *current* execution context's BasePath >>>
+	currentPath = JoinPath(execCtx.BasePath, uniqueSegment) // e.g., "/workflow:#0/MyNode:#1"
+
+	// --- Set final path on the handle ---
+	handle.internal_setPath(currentPath) // <<< IMPORTANT: Set path *before* registry call
+
+	// --- Get or Create Executioner ---
 	if execCtx.registry == nil {
 		// This indicates a programming error - context should always have a registry.
 		panic(fmt.Sprintf("internal error: execution registry is nil in context for workflow %s (resolving path: %s)", execCtx.uuid, currentPath))
 	}
 
-	// Get or create the executioner instance for the handle.
-	// Crucially uses the handle with its *now set* path.
-	// getOrCreateExecution is defined in execution_registry.go
-	exec := getOrCreateExecution[Out](execCtx.registry, handle, execCtx) // Pass handle type param and execCtx
+	// Get or create using the UNIQUE path and passing the handle
+	// <<< Pass unique path >>>
+	exec := getOrCreateExecution[Out](execCtx.registry, currentPath, handle, execCtx)
 
-	// Trigger/await execution via the executioner interface's getResult method.
-	// This triggers sync.Once for nodeExecution/workflowExecutioner.
+	// --- Trigger/Await Execution ---
+	// This triggers the actual node/workflow logic via its sync.Once mechanism.
+	// getResult operates on the specific executioner instance found/created for currentPath.
 	resultAny, execErr := exec.getResult()
 	if execErr != nil {
-		return zero, execErr // Error message should include path info from executioner
+		// Error message should include the unique path info from the executioner if implemented well
+		return zero, execErr
 	}
 
-	// Type assert the 'any' result from getResult to the specific Out type.
+	// --- Type Assert Result ---
 	resultTyped, okAssert := resultAny.(Out)
 	if !okAssert {
+		// Use the unique path in the error message
 		return zero, fmt.Errorf("internalResolve: type assertion failed for node execution result (path: %s): expected %T, got %T", currentPath, *new(Out), resultAny)
 	}
+
 	return resultTyped, nil
 }

@@ -204,11 +204,6 @@ func main() {
 		log.Printf("SSE Client error: %v", startErr)
 	}
 
-	// Optional: Add a small delay or a more robust readiness check
-	// to ensure the client is connected before proceeding.
-	// For simplicity here, we'll proceed, but in real apps, check readiness.
-	// time.Sleep(100 * time.Millisecond) // Simple delay example
-
 	// You might need to initialize the client explicitly after starting it
 	// This depends on whether the heart middleware handles initialization
 	initReq := mcpschema.InitializeRequest{}
@@ -278,20 +273,42 @@ func main() {
 		fmt.Printf("Content: %s\n", choice.Message.Content)
 		fmt.Printf("Finish Reason: %s\n", choice.FinishReason)
 
-		if choice.FinishReason == goopenai.FinishReasonToolCalls {
-			fmt.Println("\nAssertion [SUCCESS]: OpenAI response indicates tool calls were involved.")
-			if strings.Contains(choice.Message.Content, "12") {
-				fmt.Println("Assertion [SUCCESS]: Final response content contains '12'.")
-			} else {
-				fmt.Println("Assertion [WARNING]: Final response content does not contain '12'.")
-			}
+		// --- Corrected Assertions ---
+		fmt.Println("\n--- Assertions ---")
+		success := true // Assume success initially
+
+		// 1. Check if the final answer is correct
+		if strings.Contains(choice.Message.Content, "12") {
+			fmt.Println("[SUCCESS] Final response content contains '12'.")
 		} else {
-			fmt.Println("\nAssertion [FAILURE]: OpenAI response does NOT indicate tool calls finish reason.")
-			fmt.Printf("Actual finish reason: %s\n", choice.FinishReason)
-			fmt.Println("Check if the model decided to use the tool and if the MCP interaction succeeded.")
+			fmt.Println("[FAILURE] Final response content does NOT contain '12'.")
+			success = false
 		}
+
+		// 2. Check if the final finish reason is 'stop' (expected after successful tool use)
+		if choice.FinishReason == goopenai.FinishReasonStop {
+			fmt.Println("[SUCCESS] Final finish reason is 'stop'.")
+		} else {
+			// It's possible a model might use a tool and *still* finish with tool_calls if it needs another one,
+			// but for this simple example, 'stop' is expected. Treat other reasons as unexpected.
+			fmt.Printf("[WARNING] Final finish reason was '%s', expected 'stop'.\n", choice.FinishReason)
+			// Optional: Log hint if it was tool_calls again
+			if choice.FinishReason == goopenai.FinishReasonToolCalls {
+				fmt.Println("  Hint: The model requested further tool calls after the initial one.")
+			}
+		}
+
+		// Optional: Check if the tool was actually called by inspecting workflow data - skipped for simplicity
+
+		fmt.Println("--- End Assertions ---")
+		if !success {
+			log.Println("\nOne or more critical assertions failed.") // Use log
+			os.Exit(1)                                               // Exit if critical assertions failed
+		}
+
 	} else {
-		fmt.Println("No choices received in final response.")
+		log.Println("[FAILURE] No choices received in final response.") // Use log
+		os.Exit(1)
 	}
 
 	fmt.Println("\n--- MCP Example Finished ---")
