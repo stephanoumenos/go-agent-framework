@@ -158,8 +158,9 @@ func (n *node[In, Out]) internal_getPath() NodePath {
 	}
 	return n.path // Returns the unique path once set by internalResolve
 }
-func (n *node[In, Out]) internal_getDefinition() any  { return n.d } // Return the concrete *definition
+func (n *node[In, Out]) internal_getDefinition() any { return n.d } // Return the concrete *definition
 func (n *node[In, Out]) internal_getInputSource() any { return n.inputSource }
+
 func (n *node[In, Out]) internal_out() (any, error) {
 	// Standard nodes don't have a direct output like 'into' nodes.
 	return nil, fmt.Errorf("internal_out called on a standard node handle (%s); result only available via internal execution", n.internal_getPath())
@@ -167,8 +168,10 @@ func (n *node[In, Out]) internal_out() (any, error) {
 func (n *node[In, Out]) internal_setPath(p NodePath) { n.path = p }
 
 // --- Compile-time checks ---
-var _ ExecutionHandle[any] = (*node[any, any])(nil)
-var _ NodeDefinition[any, any] = (*definition[any, any])(nil)
+var (
+	_ ExecutionHandle[any]     = (*node[any, any])(nil)
+	_ NodeDefinition[any, any] = (*definition[any, any])(nil)
+)
 
 // Ensure definition implements the extended getter interface
 var _ definitionGetter = (*definition[any, any])(nil)

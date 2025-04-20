@@ -6,12 +6,13 @@ package main
 import (
 	"context"
 	"errors"
-	"heart"              // Provides core workflow definitions and execution.
-	"heart/nodes/openai" // Provides OpenAI nodes and dependency injection.
-	"heart/store"        // Provides storage options.
 	"os"
 	"testing"
 	"time"
+
+	"heart"              // Provides core workflow definitions and execution.
+	"heart/nodes/openai" // Provides OpenAI nodes and dependency injection.
+	"heart/store"        // Provides storage options.
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client.
 	"github.com/stretchr/testify/assert"         // For assertions.

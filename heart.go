@@ -477,8 +477,10 @@ func (r *newNodeResolver[In, Out]) createExecution(
 }
 
 // Compile-time checks for newNodeResolver interfaces.
-var _ NodeResolver[any, any] = (*newNodeResolver[any, any])(nil)
-var _ ExecutionCreator = (*newNodeResolver[any, any])(nil)
+var (
+	_ NodeResolver[any, any] = (*newNodeResolver[any, any])(nil)
+	_ ExecutionCreator       = (*newNodeResolver[any, any])(nil)
+)
 
 // NewNode creates an ExecutionHandle for a dynamically defined subgraph.
 // The provided function `fun` is executed lazily when the handle returned by

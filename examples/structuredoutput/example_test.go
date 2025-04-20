@@ -6,12 +6,13 @@ import (
 	"encoding/json" // Used to marshal mock recipe and simulate invalid JSON.
 	"errors"
 	"fmt"
-	"heart"
-	"heart/nodes/openai" // Provides OpenAI node and DI injection.
-	"heart/store"        // Provides storage options (MemoryStore used here).
 	"sync"
 	"testing"
 	"time"
+
+	"heart"
+	"heart/nodes/openai" // Provides OpenAI node and DI injection.
+	"heart/store"        // Provides storage options (MemoryStore used here).
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client library.
 	"github.com/stretchr/testify/assert"         // For non-fatal assertions.

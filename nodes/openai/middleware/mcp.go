@@ -4,6 +4,7 @@ package middleware
 import (
 	"errors"
 	"fmt"
+
 	"heart"
 	"heart/nodes/openai/internal"
 
@@ -51,7 +52,6 @@ func mcpWorkflowHandler(
 
 	// This is the function that will be executed declaratively when the workflow node runs.
 	return func(ctx heart.Context, originalReq openai.ChatCompletionRequest) heart.ExecutionHandle[openai.ChatCompletionResponse] {
-
 		// Use NewNode to encapsulate the loop logic.
 		loopHandle := heart.NewNode(ctx, heart.NodeID("mcp_tool_loop"),
 			func(loopCtx heart.NewNodeContext) heart.ExecutionHandle[openai.ChatCompletionResponse] {
@@ -277,7 +277,6 @@ func mcpWorkflowHandler(
 				// If the loop finished because max iterations were hit, return an error.
 				err := fmt.Errorf("middleware node '%s': %w (limit: %d)", loopCtx.BasePath, errMaxIterationsReached, maxToolIterations)
 				return heart.IntoError[openai.ChatCompletionResponse](err)
-
 			}) // End NewNode function definition
 
 		// Return the handle for the loop node. Execution starts when this handle is resolved.

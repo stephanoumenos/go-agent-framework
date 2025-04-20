@@ -5,12 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"time"
+
 	"heart"                                  // Provides core workflow definitions and execution.
 	"heart/nodes/openai"                     // Provides the base OpenAI chat completion node.
 	openaimw "heart/nodes/openai/middleware" // Provides middleware like WithStructuredOutput.
 	"heart/store"                            // Provides storage options for workflow state.
-	"os"
-	"time"
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client library.
 )
@@ -53,7 +54,6 @@ type NutInfo struct {
 // Returns:
 //   - An ExecutionHandle that will resolve to the generated Recipe struct or an error.
 func structuredOutputWorkflowHandler(ctx heart.Context, recipeTopic string) heart.ExecutionHandle[Recipe] {
-
 	// 1. Define the underlying LLM call node blueprint.
 	// This is the node that will actually make the API call to OpenAI.
 	// The middleware will wrap this definition.
@@ -156,7 +156,6 @@ func main() {
 		workflowHandle,
 		heart.WithStore(fileStore), // Pass the store option.
 	)
-
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow execution failed: %v\n", err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

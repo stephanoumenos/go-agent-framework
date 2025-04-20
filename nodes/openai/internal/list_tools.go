@@ -4,6 +4,7 @@ package internal
 import (
 	"context"
 	"fmt"
+
 	"heart"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"

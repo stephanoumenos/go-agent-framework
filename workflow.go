@@ -94,8 +94,10 @@ func (r *workflowResolver[In, Out]) createExecution(
 }
 
 // --- Compile-time Interface Checks ---
-var _ NodeResolver[any, any] = (*workflowResolver[any, any])(nil)
-var _ ExecutionCreator = (*workflowResolver[any, any])(nil)
+var (
+	_ NodeResolver[any, any] = (*workflowResolver[any, any])(nil)
+	_ ExecutionCreator       = (*workflowResolver[any, any])(nil)
+)
 
 // --- Helper Interfaces & Functions ---
 

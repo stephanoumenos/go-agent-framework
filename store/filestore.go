@@ -50,7 +50,7 @@ func NewFileStore(rootDir string, opts ...StoreOption) (Store, error) {
 	rootDir = filepath.Clean(rootDir)
 
 	// Create root directory if it doesn't exist
-	if err := os.MkdirAll(rootDir, 0755); err != nil {
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		// Check if the error is because the path already exists and is not a directory
 		if info, statErr := os.Stat(rootDir); statErr == nil && !info.IsDir() {
 			return nil, fmt.Errorf("failed to create root directory: path %s exists but is not a directory", rootDir)
@@ -62,7 +62,7 @@ func NewFileStore(rootDir string, opts ...StoreOption) (Store, error) {
 	// Check if root directory is writeable
 	testFileName := fmt.Sprintf(".write_test_%d", os.Getpid()) // Unique test file name
 	testFile := filepath.Join(rootDir, testFileName)
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("test"), 0o644); err != nil {
 		// Check if the error is permission related
 		if os.IsPermission(err) {
 			return nil, fmt.Errorf("root directory '%s' is not writeable: %w", rootDir, err)
@@ -239,7 +239,7 @@ func (s *fileStore) CreateGraph(ctx context.Context, graphID string) error {
 	defer gLock.Unlock()
 
 	graphDir := s.getGraphDir(graphID)
-	if err := os.MkdirAll(graphDir, 0755); err != nil {
+	if err := os.MkdirAll(graphDir, 0o755); err != nil {
 		// If mkdir failed, revert the state in the global map
 		s.globalLock.Lock()
 		delete(s.graphs, graphID)
@@ -265,7 +265,7 @@ func (s *fileStore) CreateGraph(ctx context.Context, graphID string) error {
 	}
 
 	graphFile := s.getGraphFile(graphID)
-	if err := os.WriteFile(graphFile, graphData, 0644); err != nil {
+	if err := os.WriteFile(graphFile, graphData, 0o644); err != nil {
 		// Attempt cleanup
 		_ = os.RemoveAll(graphDir)
 		s.globalLock.Lock()
@@ -389,7 +389,7 @@ func (s *fileStore) saveGraph(graph *fileGraph) error {
 	graphFile := s.getGraphFile(graph.ID)
 	// Write to a temporary file first, then rename for atomicity
 	tempFile := graphFile + ".tmp"
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+	if err := os.WriteFile(tempFile, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write temporary graph file '%s': %w", tempFile, err)
 	}
 
@@ -777,12 +777,12 @@ func (s *fileStore) storeContentBytesLocked(ctx context.Context, graphID string,
 
 	// Ensure content directory exists
 	contentDir := s.getContentDir(graphID)
-	if err := os.MkdirAll(contentDir, 0755); err != nil {
+	if err := os.MkdirAll(contentDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create content directory '%s': %w", contentDir, err)
 	}
 
 	// Write the content file
-	if err := os.WriteFile(contentFile, contentData, 0644); err != nil {
+	if err := os.WriteFile(contentFile, contentData, 0o644); err != nil {
 		return fmt.Errorf("failed to write content file '%s': %w", contentFile, err)
 	}
 	return nil

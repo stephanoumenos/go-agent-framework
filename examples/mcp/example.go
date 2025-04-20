@@ -5,17 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"net/http/httptest"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
 	"heart"
 	"heart/mcp"                              // Provides the Heart MCP adapter.
 	"heart/nodes/openai"                     // Provides OpenAI nodes and DI functions.
 	openaimw "heart/nodes/openai/middleware" // Provides OpenAI middleware like WithMCP.
 	"heart/store"                            // Provides workflow state storage options.
-	"log"
-	"net/http/httptest" // Used to start a local test server for the MCP service.
-	"os"
-	"strconv"
-	"strings"
-	"time"
+
+	// Used to start a local test server for the MCP service.
 
 	mcpclient "github.com/mark3labs/mcp-go/client" // MCP Go client library.
 	mcpschema "github.com/mark3labs/mcp-go/mcp"    // MCP Go schema definitions.

@@ -7,13 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"testing"
+	"time"
+
 	"heart"
 	"heart/mcp"
 	"heart/nodes/openai"
 	"heart/store"
-	"os"
-	"testing"
-	"time"
 
 	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"

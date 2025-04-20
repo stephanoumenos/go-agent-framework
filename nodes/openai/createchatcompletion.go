@@ -4,6 +4,7 @@ package openai
 import (
 	"context"
 	"errors"
+
 	"heart"
 	"heart/nodes/openai/clientiface"
 

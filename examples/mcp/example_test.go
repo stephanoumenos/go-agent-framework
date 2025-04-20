@@ -5,16 +5,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"heart"
-	"heart/mcp"
-	"heart/nodes/openai"
-	"heart/store"
 	"log"
 	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"heart"
+	"heart/mcp"
+	"heart/nodes/openai"
+	"heart/store"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpschema "github.com/mark3labs/mcp-go/mcp"
@@ -98,7 +99,6 @@ func setupAndStartMCPClient(serverSSEURL string) (mcpclient.MCPClient, func(), e
 			log.Printf("[Test Helper] Error received from client Stop: %v", err)
 		}
 		fmt.Println("[Test Helper] Test MCP Client stopped.")
-
 	}
 
 	return client, stopFunc, nil

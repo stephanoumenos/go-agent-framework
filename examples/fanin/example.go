@@ -5,12 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"heart"              // Provides core workflow definitions and execution.
-	"heart/nodes/openai" // Provides pre-built nodes for OpenAI interaction.
-	"heart/store"        // Provides storage options for workflow state.
 	"os"
 	"strings"
 	"time"
+
+	"heart"              // Provides core workflow definitions and execution.
+	"heart/nodes/openai" // Provides pre-built nodes for OpenAI interaction.
+	"heart/store"        // Provides storage options for workflow state.
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client library.
 )
@@ -75,7 +76,6 @@ func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.
 		// This function receives a NewNodeContext, allowing it to define and execute nodes
 		// within its own scoped execution environment.
 		func(synthesisCtx heart.NewNodeContext) heart.ExecutionHandle[perspectives] {
-
 			// Use FanIn to wait for the results of the dependency handles (optimistNode, pessimistNode).
 			// FanIn takes the NewNodeContext and the handle(s) to wait for.
 			// It returns a Future, which allows retrieving the result once the dependency completes.
@@ -216,7 +216,6 @@ func main() {
 	// We pass the Go context and workflow options (like the store) to Execute.
 	fmt.Println("Executing workflow and waiting for result...")
 	perspectivesResult, err := heart.Execute(workflowCtx, workflowHandle, heart.WithStore(fileStore))
-
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow execution failed: %v\n", err)
 		// Check if the error was due to the waiting context being cancelled or timing out.

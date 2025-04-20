@@ -5,13 +5,14 @@ import (
 	"context"
 	"errors" // Import errors package for error handling.
 	"fmt"
-	"heart"              // Provides core workflow definitions and execution.
-	"heart/nodes/openai" // Provides OpenAI nodes used by the workflow.
-	"heart/store"        // Provides storage options (MemoryStore used here).
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"heart"              // Provides core workflow definitions and execution.
+	"heart/nodes/openai" // Provides OpenAI nodes used by the workflow.
+	"heart/store"        // Provides storage options (MemoryStore used here).
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client structures.
 	"github.com/stretchr/testify/assert"         // For assertions.
