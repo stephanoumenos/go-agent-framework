@@ -344,9 +344,9 @@ func (ne *nodeExecution[In, Out]) loadOrDefineState() error {
 				}
 			} else if !errors.Is(respErr, store.ErrContentNotFound) {
 				// If loading output failed for a 'Complete' node, treat it as an execution error.
-				errMsg := fmt.Sprintf("failed to load persisted response content for Complete node %s: %w", ne.execPath, respErr)
-				ne.status, ne.err = nodeStatusError, errors.New(errMsg)
-				fmt.Printf("ERROR: %s\n", errMsg) // Log the error.
+				newErr := fmt.Errorf("failed to load persisted response content for Complete node %s: %w", ne.execPath, respErr)
+				ne.status, ne.err = nodeStatusError, newErr // Assign the wrapped error directly
+				fmt.Printf("ERROR: %v\n", newErr)           // Log the error (using %v is fine for errors)
 			}
 		}
 
