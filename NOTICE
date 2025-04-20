@@ -1,0 +1,33 @@
+heart
+Copyright 2025 stephanoumenos
+
+This product includes software developed by its contributors.
+
+--------------------------------------------------------------------------
+
+This product bundles software available under the Apache License 2.0:
+
+  * go-openai (github.com/sashabaranov/go-openai)
+    Licensed under the Apache License, Version 2.0.
+    A copy of the license is available at: http://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------
+
+This product bundles software available under the MIT license:
+
+  * mcp-go (github.com/mark3labs/mcp-go)
+    MIT License
+    Copyright (c) 2024 Anthropic, PBC
+
+  * testify (github.com/stretchr/testify)
+    MIT License
+    Copyright (c) 2012-2020 Mat Ryer, Tyler Bunnell and contributors.
+
+--------------------------------------------------------------------------
+
+The full text of the licenses for the bundled software (including permissions and conditions)
+should be included in all copies or substantial portions of the Software, as specified in
+their respective licenses. They can typically be found in the vendor directory or source repositories.
+
+The full text of the Apache License 2.0 governing this project ("heart") can be found in the
+LICENSE file distributed with this project.
