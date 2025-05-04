@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"heart"
+	gaf "go-agent-framework"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -17,10 +17,10 @@ import (
 
 // CallToolNodeTypeID is the NodeTypeID used for dependency injection lookup
 // for the internal CallTool node.
-const CallToolNodeTypeID heart.NodeTypeID = "openai_mcp_middleware:call_tool"
+const CallToolNodeTypeID gaf.NodeTypeID = "openai_mcp_middleware:call_tool"
 
 // CallToolNodeID is the default NodeID for the CallTool node definition.
-const CallToolNodeID heart.NodeID = "call_tool"
+const CallToolNodeID gaf.NodeID = "call_tool"
 
 var (
 	// errUnsupportedToolCallType indicates the LLM requested a tool call type
@@ -28,7 +28,7 @@ var (
 	errUnsupportedToolCallType = errors.New("unsupported tool call type in response")
 	// errDependencyNotSet indicates the MCP client dependency was required but not provided.
 	// NOTE: Consider reusing a shared internal error if defined elsewhere.
-	errDependencyNotSet = errors.New("MCP client not provided. Use heart.Dependencies(openai.InjectMCPClient(client)) to provide it")
+	errDependencyNotSet = errors.New("MCP client not provided. Use gaf.Dependencies(openai.InjectMCPClient(client)) to provide it")
 )
 
 // CallToolInput holds the necessary data to invoke a single MCP tool based on
@@ -66,7 +66,7 @@ type CallToolInitializer struct {
 }
 
 // ID returns the NodeTypeID (openai_mcp_middleware:call_tool) for this initializer.
-func (i *CallToolInitializer) ID() heart.NodeTypeID {
+func (i *CallToolInitializer) ID() gaf.NodeTypeID {
 	return CallToolNodeTypeID
 }
 
@@ -90,7 +90,7 @@ type callToolResolver struct {
 
 // Init initializes the resolver, creating the associated CallToolInitializer.
 // Called by the framework during definition Start.
-func (r *callToolResolver) Init() heart.NodeInitializer {
+func (r *callToolResolver) Init() gaf.NodeInitializer {
 	if r.initializer == nil {
 		r.initializer = &CallToolInitializer{}
 	}
@@ -282,17 +282,17 @@ func (r *callToolResolver) Get(ctx context.Context, in CallToolInput) (CallToolO
 // CallTool creates the NodeDefinition for the internal node responsible for
 // calling a single MCP tool based on an LLM request. This definition is used
 // by the WithMCP middleware.
-func CallTool() heart.NodeDefinition[CallToolInput, CallToolOutput] {
-	return heart.DefineNode(CallToolNodeID, &callToolResolver{})
+func CallTool() gaf.NodeDefinition[CallToolInput, CallToolOutput] {
+	return gaf.DefineNode(CallToolNodeID, &callToolResolver{})
 }
 
 // --- Compile-time checks ---
 
 // Ensures callToolResolver implements NodeResolver.
-var _ heart.NodeResolver[CallToolInput, CallToolOutput] = (*callToolResolver)(nil)
+var _ gaf.NodeResolver[CallToolInput, CallToolOutput] = (*callToolResolver)(nil)
 
 // Ensures CallToolInitializer implements NodeInitializer.
-var _ heart.NodeInitializer = (*CallToolInitializer)(nil)
+var _ gaf.NodeInitializer = (*CallToolInitializer)(nil)
 
 // Ensures CallToolInitializer implements DependencyInjectable with the MCPClient type.
-var _ heart.DependencyInjectable[mcpclient.MCPClient] = (*CallToolInitializer)(nil)
+var _ gaf.DependencyInjectable[mcpclient.MCPClient] = (*CallToolInitializer)(nil)

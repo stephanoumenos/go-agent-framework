@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"heart"
-	"heart/mcp"                              // Provides the Heart MCP adapter.
-	"heart/nodes/openai"                     // Provides OpenAI nodes and DI functions.
-	openaimw "heart/nodes/openai/middleware" // Provides OpenAI middleware like WithMCP.
-	"heart/store"                            // Provides workflow state storage options.
+	gaf "go-agent-framework"
+	"go-agent-framework/mcp"                              // Provides the go-agent-framework MCP adapter.
+	"go-agent-framework/nodes/openai"                     // Provides OpenAI nodes and DI functions.
+	openaimw "go-agent-framework/nodes/openai/middleware" // Provides OpenAI middleware like WithMCP.
+	"go-agent-framework/store"                            // Provides workflow state storage options.
 
 	// Used to start a local test server for the MCP service.
 
@@ -26,26 +26,26 @@ import (
 	goopenai "github.com/sashabaranov/go-openai"   // OpenAI Go client library.
 )
 
-// --- 1. Define Heart Node Logic ---
+// --- 1. Define go-agent-framework Node Logic ---
 
-// AddInput defines the input structure for the 'add' heart node.
+// AddInput defines the input structure for the 'add' gaf node.
 type AddInput struct {
 	A int `json:"A"` // First number to add.
 	B int `json:"B"` // Second number to add.
 }
 
-// AddOutput defines the output structure for the 'add' heart node.
+// AddOutput defines the output structure for the 'add' gaf node.
 type AddOutput struct {
 	Result int `json:"Result"` // The sum of A and B.
 }
 
-// addNodeResolver implements the core logic for the 'add' heart node.
+// addNodeResolver implements the core logic for the 'add' gaf node.
 type addNodeResolver struct{}
 
 // addNodeNodeTypeID is the unique type identifier used for dependency injection
 // related to the addNodeResolver. This example doesn't use DI for this node,
 // but it's good practice to define it.
-const addNodeNodeTypeID heart.NodeTypeID = "example:addNumbers"
+const addNodeNodeTypeID gaf.NodeTypeID = "example:addNumbers"
 
 // addNodeInitializer is the initializer for the 'add' node.
 // It's required by the NodeResolver interface but doesn't need specific
@@ -53,11 +53,11 @@ const addNodeNodeTypeID heart.NodeTypeID = "example:addNumbers"
 type addNodeInitializer struct{}
 
 // ID implements the NodeInitializer interface, returning the node type ID.
-func (i *addNodeInitializer) ID() heart.NodeTypeID { return addNodeNodeTypeID }
+func (i *addNodeInitializer) ID() gaf.NodeTypeID { return addNodeNodeTypeID }
 
 // Init implements the NodeResolver interface. It returns the specific
 // NodeInitializer for this node type.
-func (r *addNodeResolver) Init() heart.NodeInitializer {
+func (r *addNodeResolver) Init() gaf.NodeInitializer {
 	return &addNodeInitializer{}
 }
 
@@ -67,10 +67,10 @@ func (r *addNodeResolver) Get(ctx context.Context, in AddInput) (AddOutput, erro
 	return AddOutput{Result: in.A + in.B}, nil
 }
 
-// DefineAddNode creates a heart.NodeDefinition for the adder node.
+// DefineAddNode creates a gaf.NodeDefinition for the adder node.
 // This blueprint can be reused within workflows.
-func DefineAddNode(nodeID heart.NodeID) heart.NodeDefinition[AddInput, AddOutput] {
-	return heart.DefineNode(nodeID, &addNodeResolver{})
+func DefineAddNode(nodeID gaf.NodeID) gaf.NodeDefinition[AddInput, AddOutput] {
+	return gaf.DefineNode(nodeID, &addNodeResolver{})
 }
 
 // --- 2. Define MCP Tool Schema and Mappers ---
@@ -94,7 +94,7 @@ var addToolSchema = mcpschema.Tool{
 
 // mapToolRequest converts the arguments from an incoming MCP tool request
 // (mcp.CallToolRequest) into the input type (AddInput) required by the
-// corresponding heart node (addNodeResolver). It handles type conversions
+// corresponding gaf node (addNodeResolver). It handles type conversions
 // and validation.
 func mapToolRequest(ctx context.Context, req mcpschema.CallToolRequest) (AddInput, error) {
 	var input AddInput
@@ -142,7 +142,7 @@ func mapToolRequest(ctx context.Context, req mcpschema.CallToolRequest) (AddInpu
 	return input, nil
 }
 
-// mapToolResponse converts the output (AddOutput) from the heart node execution
+// mapToolResponse converts the output (AddOutput) from the gaf node execution
 // back into the format expected by the MCP server (*mcp.CallToolResult).
 // In this case, it converts the integer result into an MCP text content block.
 func mapToolResponse(ctx context.Context, out AddOutput) (*mcpschema.CallToolResult, error) {
@@ -160,7 +160,7 @@ func mapToolResponse(ctx context.Context, out AddOutput) (*mcpschema.CallToolRes
 // the MCP middleware, sends the prompt to the LLM, and returns the final response handle.
 // The WithMCP middleware handles the tool discovery and execution loop if the LLM
 // decides to use the 'add_numbers' tool.
-func mainWorkflowHandler(ctx heart.Context, prompt string) heart.ExecutionHandle[goopenai.ChatCompletionResponse] {
+func mainWorkflowHandler(ctx gaf.Context, prompt string) gaf.ExecutionHandle[goopenai.ChatCompletionResponse] {
 	// Define the base LLM call node blueprint.
 	llmNodeDef := openai.CreateChatCompletion("base_llm_call")
 
@@ -189,7 +189,7 @@ func mainWorkflowHandler(ctx heart.Context, prompt string) heart.ExecutionHandle
 	// Start the workflow by starting the MCP-wrapped node.
 	// Input is the prepared OpenAI request.
 	// The handle represents the eventual final response from the LLM after any tool interactions.
-	finalResponseHandle := mcpNodeDef.Start(heart.Into(request))
+	finalResponseHandle := mcpNodeDef.Start(gaf.Into(request))
 
 	// Return the handle to the final response.
 	return finalResponseHandle
@@ -198,14 +198,14 @@ func mainWorkflowHandler(ctx heart.Context, prompt string) heart.ExecutionHandle
 // --- 4. Main Execution Logic ---
 
 func main() {
-	fmt.Println("--- Starting Heart MCP Example ---")
+	fmt.Println("--- Starting go-agent-framework MCP Example ---")
 
 	// --- Setup Tool Node ---
-	// Create the heart node definition for the adder tool.
+	// Create the gaf node definition for the adder tool.
 	addNodeDef := DefineAddNode("adder")
 
 	// --- Adapt Tool for MCP ---
-	// Use heart/mcp.IntoTool to bridge the heart node definition (addNodeDef),
+	// Use gaf/mcp.IntoTool to bridge the gaf node definition (addNodeDef),
 	// its MCP schema (addToolSchema), and the mapping functions (mapToolRequest, mapToolResponse).
 	// This creates an MCPTool implementation that can be used with an MCP server.
 	adaptedTool := mcp.IntoTool(
@@ -214,16 +214,16 @@ func main() {
 		mapToolRequest,
 		mapToolResponse,
 	)
-	fmt.Printf("Adapted heart node as MCP tool '%s'\n", adaptedTool.Definition().Name)
+	fmt.Printf("Adapted gaf node as MCP tool '%s'\n", adaptedTool.Definition().Name)
 
 	// --- Setup Local MCP Server ---
 	// Create a new MCP server instance.
 	mcpServer := mcpserver.NewMCPServer(
-		"heart-mcp-example-server", // Server name
-		"1.0.0",                    // Server version
-		mcpserver.WithLogging(),    // Enable logging for server activity.
+		"gaf-mcp-example-server", // Server name
+		"1.0.0",                  // Server version
+		mcpserver.WithLogging(),  // Enable logging for server activity.
 	)
-	// Register the adapted Heart tool with the MCP server.
+	// Register the adapted go-agent-framework tool with the MCP server.
 	// mcp.AddTools handles the conversion to the server's expected format.
 	mcp.AddTools(mcpServer, adaptedTool)
 	fmt.Printf("Added tool '%s' to MCP Server\n", adaptedTool.Definition().Name)
@@ -272,7 +272,7 @@ func main() {
 	time.Sleep(100 * time.Millisecond) // Small delay to allow connection setup.
 	initReq := mcpschema.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcpschema.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcpschema.Implementation{Name: "heart-mcp-example-client", Version: "1.0.0"}
+	initReq.Params.ClientInfo = mcpschema.Implementation{Name: "gaf-mcp-example-client", Version: "1.0.0"}
 	// Use a timeout for the Initialize call.
 	initCtx, initTimeoutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer initTimeoutCancel()
@@ -297,7 +297,7 @@ func main() {
 	// openai.Inject makes the OpenAI client available to CreateChatCompletion nodes.
 	// openai.InjectMCPClient makes the MCP client available to the internal nodes
 	// used by the WithMCP middleware (ListTools, CallTool).
-	diErr := heart.Dependencies(
+	diErr := gaf.Dependencies(
 		openai.Inject(openaiClient),
 		openai.InjectMCPClient(mcpClient),
 	)
@@ -305,12 +305,12 @@ func main() {
 		log.Fatalf("Error setting up dependencies: %v", diErr)
 	}
 	// Reset dependencies at the end, mainly useful if this code were part of a test.
-	defer heart.ResetDependencies()
+	defer gaf.ResetDependencies()
 	fmt.Println("Dependencies injected (Real OpenAI + MCP Client).")
 
 	// --- Define the Main Workflow ---
 	// Use the handler function defined earlier.
-	mainWorkflowDef := heart.WorkflowFromFunc("mainToolWorkflow", mainWorkflowHandler)
+	mainWorkflowDef := gaf.WorkflowFromFunc("mainToolWorkflow", mainWorkflowHandler)
 	fmt.Println("Main workflow defined.")
 
 	// --- Execute Workflow ---
@@ -322,7 +322,7 @@ func main() {
 	fmt.Printf("\n--- Executing Workflow ---\nInput Prompt: \"%s\"\n", inputPrompt)
 
 	// Start the workflow lazily.
-	workflowHandle := mainWorkflowDef.Start(heart.Into(inputPrompt))
+	workflowHandle := mainWorkflowDef.Start(gaf.Into(inputPrompt))
 
 	// Setup a store for workflow state persistence. FileStore is used here.
 	fileStore, storeErr := store.NewFileStore("workflows_mcp")
@@ -333,8 +333,8 @@ func main() {
 	// defer os.RemoveAll("./workflows_mcp")
 
 	// Execute the workflow and wait for the final result.
-	// heart.Execute triggers the resolution process starting from the handle.
-	finalResult, execErr := heart.Execute(execCtx, workflowHandle, heart.WithStore(fileStore))
+	// gaf.Execute triggers the resolution process starting from the handle.
+	finalResult, execErr := gaf.Execute(execCtx, workflowHandle, gaf.WithStore(fileStore))
 
 	fmt.Println("\n--- Workflow Execution Finished ---")
 

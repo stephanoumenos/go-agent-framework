@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"heart"
-	"heart/mcp"
-	"heart/nodes/openai"
-	"heart/store"
+	gaf "go-agent-framework"
+	"go-agent-framework/mcp"
+	"go-agent-framework/nodes/openai"
+	"go-agent-framework/store"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpschema "github.com/mark3labs/mcp-go/mcp"
@@ -80,7 +80,7 @@ func setupAndStartMCPClient(serverSSEURL string) (mcpclient.MCPClient, func(), e
 	// Initialize the client
 	initReq := mcpschema.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcpschema.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcpschema.Implementation{Name: "heart-mcp-test-client", Version: "1.0.0"}
+	initReq.Params.ClientInfo = mcpschema.Implementation{Name: "gaf-mcp-test-client", Version: "1.0.0"}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second) // Timeout for init
 	defer initCancel()
 
@@ -288,22 +288,22 @@ func TestMCPWorkflowIntegration(t *testing.T) {
 
 	// --- Setup Dependency Injection ---
 	// Inject the MOCK OpenAI client and the REAL (but locally connected) MCP client.
-	err = heart.Dependencies(
+	err = gaf.Dependencies(
 		openai.Inject(mockClient),             // Use the MOCK OpenAI client
 		openai.InjectMCPClient(mcpTestClient), // Use the REAL client connected to the test server
 	)
 	require.NoError(t, err, "Failed to inject dependencies")
 	// Reset DI state after test using t.Cleanup
 	t.Cleanup(func() {
-		fmt.Println("[Test Cleanup] Resetting Heart dependencies...")
-		heart.ResetDependencies()
+		fmt.Println("[Test Cleanup] Resetting go-agent-framework dependencies...")
+		gaf.ResetDependencies()
 		fmt.Println("[Test Cleanup] Dependencies reset.")
 	})
 
 	// --- Define Workflow ---
 	// Use a unique ID to avoid potential conflicts if not running parallel
-	workflowID := heart.NodeID("testMCPWorkflow_Integration_" + strconv.Itoa(time.Now().Nanosecond()))
-	mainWorkflowDef := heart.WorkflowFromFunc(workflowID, mainWorkflowHandler)
+	workflowID := gaf.NodeID("testMCPWorkflow_Integration_" + strconv.Itoa(time.Now().Nanosecond()))
+	mainWorkflowDef := gaf.WorkflowFromFunc(workflowID, mainWorkflowHandler)
 
 	// --- Execute Workflow ---
 	memStore := store.NewMemoryStore()
@@ -311,8 +311,8 @@ func TestMCPWorkflowIntegration(t *testing.T) {
 	defer cancel()
 
 	fmt.Println("--- Starting Workflow Execution in Test ---")
-	workflowHandle := mainWorkflowDef.Start(heart.Into(inputPrompt))
-	finalResult, err := heart.Execute(execCtx, workflowHandle, heart.WithStore(memStore))
+	workflowHandle := mainWorkflowDef.Start(gaf.Into(inputPrompt))
+	finalResult, err := gaf.Execute(execCtx, workflowHandle, gaf.WithStore(memStore))
 	fmt.Println("--- Finished Workflow Execution in Test ---")
 
 	// --- Assertions ---

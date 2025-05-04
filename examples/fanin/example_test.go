@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"heart"              // Provides core workflow definitions and execution.
-	"heart/nodes/openai" // Provides OpenAI nodes used by the workflow.
-	"heart/store"        // Provides storage options (MemoryStore used here).
+	gaf "go-agent-framework"
+	"go-agent-framework/nodes/openai" // Provides OpenAI nodes used by the workflow.
+	"go-agent-framework/store"        // Provides storage options (MemoryStore used here).
 
+	// Provides core workflow definitions and execution.
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client structures.
 	"github.com/stretchr/testify/assert"         // For assertions.
 	"github.com/stretchr/testify/require"        // For setup checks and fatal assertions.
@@ -113,7 +114,7 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	// 1. Add cleanup hook to reset global dependency injection state after the test.
 	// This is crucial for maintaining test isolation, especially when running in parallel.
 	t.Cleanup(func() {
-		heart.ResetDependencies()
+		gaf.ResetDependencies()
 	})
 
 	// 2. Setup Mock Client with canned responses for each perspective.
@@ -128,14 +129,14 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 
 	// 3. Setup Dependencies & Store
 	// Inject the mock client using the standard openai.Inject function.
-	err := heart.Dependencies(openai.Inject(mockClient))
+	err := gaf.Dependencies(openai.Inject(mockClient))
 	require.NoError(t, err, "Failed to inject mock dependencies") // Use require for setup errors.
 	// Use an in-memory store for integration tests.
 	memStore := store.NewMemoryStore()
 
 	// 4. Define the workflow using the production handler.
 	// Use a unique ID for the definition within the test.
-	threePerspectiveWorkflowDef := heart.WorkflowFromFunc("threePerspectivesTest", threePerspectivesWorkflowHandler)
+	threePerspectiveWorkflowDef := gaf.WorkflowFromFunc("threePerspectivesTest", threePerspectivesWorkflowHandler)
 
 	// 5. Prepare Input for the workflow.
 	inputQuestion := "Should companies invest heavily in custom AGI research?"
@@ -146,11 +147,11 @@ func TestThreePerspectivesWorkflowIntegration(t *testing.T) {
 	defer cancel()
 
 	// Start the workflow lazily.
-	resultHandle := threePerspectiveWorkflowDef.Start(heart.Into(inputQuestion))
+	resultHandle := threePerspectiveWorkflowDef.Start(gaf.Into(inputQuestion))
 
 	// Execute the workflow and wait for the result.
-	// Pass the context and store options to heart.Execute.
-	perspectivesResult, err := heart.Execute(ctx, resultHandle, heart.WithStore(memStore))
+	// Pass the context and store options to gaf.Execute.
+	perspectivesResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
 
 	// --- Assertions ---
 	// 7. Check for execution errors, prioritizing context errors.

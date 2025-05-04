@@ -6,13 +6,14 @@ package main
 import (
 	"context"
 	"errors"
+	gaf "go-agent-framework"
 	"os"
 	"testing"
 	"time"
 
-	"heart"              // Provides core workflow definitions and execution.
-	"heart/nodes/openai" // Provides OpenAI nodes and dependency injection.
-	"heart/store"        // Provides storage options.
+	// Provides core workflow definitions and execution.
+	"go-agent-framework/nodes/openai" // Provides OpenAI nodes and dependency injection.
+	"go-agent-framework/store"        // Provides storage options.
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client.
 	"github.com/stretchr/testify/assert"         // For assertions.
@@ -35,21 +36,21 @@ func TestStructuredOutputWorkflowE2E(t *testing.T) {
 	// --- Test Setup ---
 	// 1. Add cleanup hook for DI state.
 	t.Cleanup(func() {
-		heart.ResetDependencies()
+		gaf.ResetDependencies()
 	})
 
 	// 2. Setup REAL OpenAI Client, Dependencies & Store
 	realClient := goopenai.NewClient(apiKey)
 	// Inject the real client into the global DI container.
-	err := heart.Dependencies(openai.Inject(realClient))
+	err := gaf.Dependencies(openai.Inject(realClient))
 	require.NoError(t, err, "Failed to inject real dependencies")
 
 	// Use a MemoryStore for simplicity in E2E test state management.
 	memStore := store.NewMemoryStore()
 
 	// 3. Define the Workflow using the production handler.
-	workflowID := heart.NodeID("recipeGeneratorWorkflowE2E")
-	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
+	workflowID := gaf.NodeID("recipeGeneratorWorkflowE2E")
+	recipeWorkflowDef := gaf.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// 4. Prepare Input for the workflow.
 	inputTopic := "Super quick and easy microwave chocolate mug cake, maybe vegan?"
@@ -59,10 +60,10 @@ func TestStructuredOutputWorkflowE2E(t *testing.T) {
 	defer cancel()
 
 	// Start the workflow lazily.
-	resultHandle := recipeWorkflowDef.Start(heart.Into(inputTopic))
+	resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
 
 	// Execute and wait for the result (Recipe struct).
-	recipeResult, err := heart.Execute(ctx, resultHandle, heart.WithStore(memStore))
+	recipeResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
 
 	// --- Assertions ---
 	// 6. Check for execution errors, prioritizing context errors.

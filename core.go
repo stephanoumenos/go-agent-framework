@@ -1,5 +1,4 @@
-// ./heart.go
-package heart
+package gaf
 
 import (
 	"context"
@@ -11,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"heart/store"
+	"go-agent-framework/store"
 
 	"github.com/google/uuid"
 )
@@ -80,8 +79,8 @@ func JoinPath(base NodePath, segment any) NodePath {
 type ExecutionHandle[Out any] interface {
 	// zero is a marker method used for type inference with generics.
 	zero(Out)
-	// heartHandle is an internal marker method for identifying heart handles.
-	heartHandle()
+	// gafHandle is an internal marker method for identifying gaf handles.
+	gafHandle()
 	// internal_getPath returns the unique NodePath assigned to this specific
 	// execution instance once it has been resolved by the framework. Before
 	// resolution, it may return a temporary or unresolved path.
@@ -106,7 +105,7 @@ type ExecutionHandle[Out any] interface {
 // --- Node Definition (Unified for Atomic Nodes and Workflows) ---
 
 // NodeDefinition represents a reusable blueprint for an executable unit within
-// the Heart framework. This unit can be an *atomic* node (defined via DefineNode
+// the go-agent-framework framework. This unit can be an *atomic* node (defined via DefineNode
 // with a user-provided NodeResolver) or a *composite* workflow (defined via
 // WorkflowFromFunc or NewNode).
 //
@@ -329,8 +328,8 @@ type into[Out any] struct {
 // zero implements ExecutionHandle.
 func (i *into[Out]) zero(Out) {}
 
-// heartHandle implements ExecutionHandle.
-func (i *into[Out]) heartHandle() {}
+// gafHandle implements ExecutionHandle.
+func (i *into[Out]) gafHandle() {}
 
 // internal_getPath implements ExecutionHandle. Returns a default path or one set by internalResolve.
 func (i *into[Out]) internal_getPath() NodePath {
@@ -356,7 +355,7 @@ func (i *into[Out]) internal_out() (any, error) { return i.val, i.err }
 func (i *into[Out]) internal_setPath(p NodePath) { i.path = p }
 
 // Into creates an ExecutionHandle that immediately resolves to the provided value.
-// Useful for injecting static data or results from outside the Heart framework
+// Useful for injecting static data or results from outside the go-agent-framework framework
 // into the execution graph.
 func Into[Out any](val Out) ExecutionHandle[Out] { return &into[Out]{val: val, err: nil} }
 
@@ -398,9 +397,9 @@ func (r *newNodeResolver[In, Out]) Init() NodeInitializer {
 // the NewNode *wrapper* node runs. It sets up the NewNodeContext, calls the
 // user's function to define the subgraph, and then resolves the subgraph's result.
 func (r *newNodeResolver[In, Out]) Get(runCtx context.Context, in In) (Out, error) { // Added In param.
-	// Retrieve the runtime heart Context and unique execution path, which were added
+	// Retrieve the runtime gaf Context and unique execution path, which were added
 	// to the Go context (`runCtx`) by the nodeExecution wrapper before calling Get.
-	runtimeWfCtx, okWfCtx := runCtx.Value(heartContextKey{}).(Context)
+	runtimeWfCtx, okWfCtx := runCtx.Value(gafContextKey{}).(Context)
 	runtimeExecPath, okExecPath := runCtx.Value(execPathKey{}).(NodePath)
 
 	if !okWfCtx || !okExecPath {
@@ -493,10 +492,10 @@ var (
 // `fun`: The function that defines the subgraph.
 func NewNode[Out any](ctx Context, nodeID NodeID, fun func(ctx NewNodeContext) ExecutionHandle[Out]) ExecutionHandle[Out] {
 	if fun == nil {
-		panic("heart.NewNode requires a non-nil function")
+		panic("gaf.NewNode requires a non-nil function")
 	}
 	if nodeID == "" {
-		panic("heart.NewNode requires a non-empty node ID")
+		panic("gaf.NewNode requires a non-empty node ID")
 	}
 	// Create the internal resolver. Use struct{} as the placeholder input type for the wrapper node.
 	resolver := &newNodeResolver[struct{}, Out]{fun: fun, nodeID: nodeID}
@@ -517,7 +516,7 @@ func NewNode[Out any](ctx Context, nodeID NodeID, fun func(ctx NewNodeContext) E
 
 // --- Execute (Top-Level Trigger) ---
 
-// Execute is the primary entry point for running a Heart workflow or node graph.
+// Execute is the primary entry point for running a go-agent-framework workflow or node graph.
 // It takes a Go context for cancellation, a handle to the final node/workflow
 // of the graph, and optional WorkflowOptions (like WithStore, WithUUID).
 //
@@ -579,8 +578,8 @@ func Execute[Out any](ctx context.Context, handle ExecutionHandle[Out], opts ...
 
 // --- Internal context keys ---
 
-// heartContextKey is used as a key for context.WithValue to pass the runtime heart.Context.
-type heartContextKey struct{}
+// gafContextKey is used as a key for context.WithValue to pass the runtime gaf.Context.
+type gafContextKey struct{}
 
 // execPathKey is used as a key for context.WithValue to pass the unique runtime NodePath.
 type execPathKey struct{}

@@ -7,14 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	gaf "go-agent-framework"
 	"os"
 	"testing"
 	"time"
 
-	"heart"
-	"heart/mcp"
-	"heart/nodes/openai"
-	"heart/store"
+	"go-agent-framework/mcp"
+	"go-agent-framework/nodes/openai"
+	"go-agent-framework/store"
 
 	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
@@ -42,7 +42,7 @@ func TestMCPWorkflowE2E(t *testing.T) {
 	)
 
 	// --- Setup and Start Local MCP Server (using helper) ---
-	// The *server* part is still local for E2E as we're testing the heart lib + OpenAI,
+	// The *server* part is still local for E2E as we're testing the gaf lib + OpenAI,
 	// assuming the existence of *some* MCP server to connect to.
 	mcpServerURL, stopMCPServer, err := setupAndStartMCPServer(adaptedTool)
 	require.NoError(t, err, "E2E: Failed to setup MCP server")
@@ -60,19 +60,19 @@ func TestMCPWorkflowE2E(t *testing.T) {
 
 	// --- Setup Dependency Injection ---
 	// Inject the REAL OpenAI client and the REAL (but locally connected) MCP client.
-	err = heart.Dependencies(
+	err = gaf.Dependencies(
 		openai.Inject(openaiClient),           // Use the REAL OpenAI client
 		openai.InjectMCPClient(mcpTestClient), // Use the REAL client connected to the test server
 	)
 	require.NoError(t, err, "E2E: Failed to inject dependencies")
 	t.Cleanup(func() {
-		fmt.Println("E2E: Resetting Heart dependencies...")
-		heart.ResetDependencies()
+		fmt.Println("E2E: Resetting go-agent-framework dependencies...")
+		gaf.ResetDependencies()
 	}) // Reset DI state after test
 
 	// --- Define Workflow ---
-	workflowID := heart.NodeID("e2eMCPWorkflow")
-	mainWorkflowDef := heart.WorkflowFromFunc(workflowID, mainWorkflowHandler)
+	workflowID := gaf.NodeID("e2eMCPWorkflow")
+	mainWorkflowDef := gaf.WorkflowFromFunc(workflowID, mainWorkflowHandler)
 
 	// --- Execute Workflow ---
 	memStore := store.NewMemoryStore() // Use memory store for E2E test simplicity
@@ -81,8 +81,8 @@ func TestMCPWorkflowE2E(t *testing.T) {
 	defer cancel()
 
 	fmt.Println("--- Starting E2E Workflow Execution ---")
-	workflowHandle := mainWorkflowDef.Start(heart.Into(inputPrompt))
-	finalResult, err := heart.Execute(execCtx, workflowHandle, heart.WithStore(memStore))
+	workflowHandle := mainWorkflowDef.Start(gaf.Into(inputPrompt))
+	finalResult, err := gaf.Execute(execCtx, workflowHandle, gaf.WithStore(memStore))
 	fmt.Println("--- Finished E2E Workflow Execution ---")
 
 	// --- Assertions ---

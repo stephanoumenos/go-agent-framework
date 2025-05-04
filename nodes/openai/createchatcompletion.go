@@ -5,28 +5,29 @@ import (
 	"context"
 	"errors"
 
-	"heart"
-	"heart/nodes/openai/clientiface"
+	"go-agent-framework/nodes/openai/clientiface"
+
+	gaf "go-agent-framework"
 
 	openai "github.com/sashabaranov/go-openai"
 )
 
 // createChatCompletionNodeTypeID is the NodeTypeID used for dependency injection
 // lookup for the CreateChatCompletion node.
-const createChatCompletionNodeTypeID heart.NodeTypeID = "openai:createChatCompletion"
+const createChatCompletionNodeTypeID gaf.NodeTypeID = "openai:createChatCompletion"
 
 // ErrDependencyNotSet indicates that the OpenAI client dependency was required but
-// not provided via heart.Dependencies(openai.Inject(client)) during setup.
-var ErrDependencyNotSet = errors.New("OpenAI client not provided. Use heart.Dependencies(openai.Inject(client)) to provide it")
+// not provided via gaf.Dependencies(openai.Inject(client)) during setup.
+var ErrDependencyNotSet = errors.New("OpenAI client not provided. Use gaf.Dependencies(openai.Inject(client)) to provide it")
 
 // CreateChatCompletion defines a node blueprint that calls the OpenAI CreateChatCompletion API endpoint.
 // It returns a NodeDefinition which can be used within workflows.
 //
 // Parameters:
-//   - nodeID: A heart.NodeID that uniquely identifies this node blueprint within its definition scope.
-func CreateChatCompletion(nodeID heart.NodeID) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
+//   - nodeID: A gaf.NodeID that uniquely identifies this node blueprint within its definition scope.
+func CreateChatCompletion(nodeID gaf.NodeID) gaf.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
 	// Call the updated DefineNode which only takes nodeID and the resolver.
-	return heart.DefineNode(nodeID, &createChatCompletion{})
+	return gaf.DefineNode(nodeID, &createChatCompletion{})
 }
 
 // createChatCompletionInitializer handles dependency injection for the chat completion node.
@@ -39,7 +40,7 @@ type createChatCompletionInitializer struct {
 
 // ID returns the NodeTypeID (`openai:createChatCompletion`) for this initializer,
 // allowing the dependency injection system to associate it with the correct dependency.
-func (c *createChatCompletionInitializer) ID() heart.NodeTypeID {
+func (c *createChatCompletionInitializer) ID() gaf.NodeTypeID {
 	return createChatCompletionNodeTypeID
 }
 
@@ -68,7 +69,7 @@ type createChatCompletion struct {
 // definition's `Start` phase (before execution). It creates the associated
 // `createChatCompletionInitializer` instance, which will then be used for
 // dependency injection. Returns the initializer instance.
-func (c *createChatCompletion) Init() heart.NodeInitializer {
+func (c *createChatCompletion) Init() gaf.NodeInitializer {
 	// Lazily create the initializer only when Init is called.
 	if c.initializer == nil {
 		c.initializer = &createChatCompletionInitializer{}
@@ -93,10 +94,10 @@ func (c *createChatCompletion) Get(ctx context.Context, in openai.ChatCompletion
 // --- Compile-time Interface Checks ---
 
 // Ensures createChatCompletion implements NodeResolver.
-var _ heart.NodeResolver[openai.ChatCompletionRequest, openai.ChatCompletionResponse] = (*createChatCompletion)(nil)
+var _ gaf.NodeResolver[openai.ChatCompletionRequest, openai.ChatCompletionResponse] = (*createChatCompletion)(nil)
 
 // Ensures createChatCompletionInitializer implements NodeInitializer.
-var _ heart.NodeInitializer = (*createChatCompletionInitializer)(nil)
+var _ gaf.NodeInitializer = (*createChatCompletionInitializer)(nil)
 
 // Ensures createChatCompletionInitializer implements DependencyInjectable with the client interface type.
-var _ heart.DependencyInjectable[clientiface.ClientInterface] = (*createChatCompletionInitializer)(nil)
+var _ gaf.DependencyInjectable[clientiface.ClientInterface] = (*createChatCompletionInitializer)(nil)

@@ -1,5 +1,5 @@
 // ./dependencyinjection.go
-package heart
+package gaf
 
 import (
 	"errors"

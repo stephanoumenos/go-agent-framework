@@ -5,15 +5,16 @@ import (
 	"errors"
 	"fmt"
 
-	"heart"
-	"heart/nodes/openai/internal"
+	"go-agent-framework/nodes/openai/internal"
+
+	gaf "go-agent-framework"
 
 	openai "github.com/sashabaranov/go-openai"
 	// MCP client interface is implicitly required via DI for internal nodes
 )
 
 // mcpWorkflowID is the NodeID used for the node definition created by WithMCP.
-const mcpWorkflowID heart.NodeID = "openai_mcp"
+const mcpWorkflowID gaf.NodeID = "openai_mcp"
 
 var (
 	// errMaxIterationsReached indicates the tool interaction loop exceeded maxToolIterations.
@@ -43,48 +44,48 @@ const (
 //     v. Continue the loop.
 //  3. If the loop finishes due to reaching maxToolIterations, return errMaxIterationsReached.
 func mcpWorkflowHandler(
-	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse], // The wrapped LLM call node definition
-) heart.WorkflowHandlerFunc[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
+	nextNodeDef gaf.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse], // The wrapped LLM call node definition
+) gaf.WorkflowHandlerFunc[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
 	// Define the internal node blueprints needed by the workflow handler ONCE.
 	// These definitions are used within the handler function below.
 	listToolsNodeDef := internal.ListTools()
 	callToolNodeDef := internal.CallTool()
 
 	// This is the function that will be executed declaratively when the workflow node runs.
-	return func(ctx heart.Context, originalReq openai.ChatCompletionRequest) heart.ExecutionHandle[openai.ChatCompletionResponse] {
+	return func(ctx gaf.Context, originalReq openai.ChatCompletionRequest) gaf.ExecutionHandle[openai.ChatCompletionResponse] {
 		// Use NewNode to encapsulate the loop logic.
-		loopHandle := heart.NewNode(ctx, heart.NodeID("mcp_tool_loop"),
-			func(loopCtx heart.NewNodeContext) heart.ExecutionHandle[openai.ChatCompletionResponse] {
+		loopHandle := gaf.NewNode(ctx, gaf.NodeID("mcp_tool_loop"),
+			func(loopCtx gaf.NewNodeContext) gaf.ExecutionHandle[openai.ChatCompletionResponse] {
 				if nextNodeDef == nil {
 					// Handle the case where the wrapped node definition is nil.
 					err := fmt.Errorf("middleware node '%s': %w", loopCtx.BasePath, errMCPNilNextNodeDef)
-					return heart.IntoError[openai.ChatCompletionResponse](err)
+					return gaf.IntoError[openai.ChatCompletionResponse](err)
 				}
 
 				// --- List Available Tools ---
 				// Start the ListTools node. Input is ignored (empty struct).
-				listToolsHandle := listToolsNodeDef.Start(heart.Into(struct{}{}))
+				listToolsHandle := listToolsNodeDef.Start(gaf.Into(struct{}{}))
 
 				// --- Get Tool List Result ---
 				// Use FanIn to wait for the listToolsHandle to complete.
-				toolsFuture := heart.FanIn(loopCtx, listToolsHandle)
+				toolsFuture := gaf.FanIn(loopCtx, listToolsHandle)
 				toolsResult, toolsErr := toolsFuture.Get()
 
-				// Handle potential errors from the heart framework executing listToolsHandle.
+				// Handle potential errors from the gaf framework executing listToolsHandle.
 				if toolsErr != nil {
 					err := fmt.Errorf("middleware node '%s': failed to get MCP tool list result: %w", loopCtx.BasePath, toolsErr)
-					return heart.IntoError[openai.ChatCompletionResponse](err)
+					return gaf.IntoError[openai.ChatCompletionResponse](err)
 				}
 				// Handle errors reported *by* the listTools node's internal logic.
 				if toolsResult.Error != nil {
 					err := fmt.Errorf("middleware node '%s': error listing MCP tools: %w", loopCtx.BasePath, toolsResult.Error)
-					return heart.IntoError[openai.ChatCompletionResponse](err)
+					return gaf.IntoError[openai.ChatCompletionResponse](err)
 				}
 				// Check if the necessary MCPToolsResult map exists if tools were found.
 				mcpToolsAvailable := len(toolsResult.OpenAITools) > 0
 				if mcpToolsAvailable && toolsResult.MCPToolsResult == nil {
 					err := fmt.Errorf("internal error in middleware node '%s': MCPToolsResult map is nil after successful ListTools execution which found tools", loopCtx.BasePath)
-					return heart.IntoError[openai.ChatCompletionResponse](err)
+					return gaf.IntoError[openai.ChatCompletionResponse](err)
 				}
 
 				// --- Loop Initialization ---
@@ -150,14 +151,14 @@ func mcpWorkflowHandler(
 
 					// --- Execute LLM Call for this iteration ---
 					// Use the loop's context implicitly when starting nodes.
-					llmHandle := nextNodeDef.Start(heart.Into(iterReq))
-					llmFuture := heart.FanIn(loopCtx, llmHandle)
+					llmHandle := nextNodeDef.Start(gaf.Into(iterReq))
+					llmFuture := gaf.FanIn(loopCtx, llmHandle)
 					llmResponse, llmErr := llmFuture.Get() // Wait for this LLM call.
 
 					if llmErr != nil {
 						// Immediately wrap and return this framework or node error.
 						err := fmt.Errorf("LLM call node failed on iteration %d within MCP loop ('%s'): %w", iter, loopCtx.BasePath, llmErr)
-						return heart.IntoError[openai.ChatCompletionResponse](err)
+						return gaf.IntoError[openai.ChatCompletionResponse](err)
 					}
 
 					// Store the received response.
@@ -166,7 +167,7 @@ func mcpWorkflowHandler(
 					// Check response validity.
 					if len(llmResponse.Choices) == 0 {
 						err := fmt.Errorf("LLM response contained no choices on iteration %d within MCP loop ('%s')", iter, loopCtx.BasePath)
-						return heart.IntoError[openai.ChatCompletionResponse](err)
+						return gaf.IntoError[openai.ChatCompletionResponse](err)
 					}
 
 					// --- Check if Tool Calls are present in the response ---
@@ -175,7 +176,7 @@ func mcpWorkflowHandler(
 					// --- Exit Condition: No Tool Calls Requested ---
 					if len(toolCalls) == 0 {
 						// The LLM did not request any tools, this is the final answer.
-						return heart.Into(lastResponse)
+						return gaf.Into(lastResponse)
 					}
 
 					// --- Tool Calls Exist: Process and Invoke ---
@@ -186,23 +187,23 @@ func mcpWorkflowHandler(
 					currentMessages = append(currentMessages, assistantMsg)
 
 					// --- Invoke Tools in Parallel ---
-					toolCallFutures := make([]*heart.Future[internal.CallToolOutput], len(toolCalls))
+					toolCallFutures := make([]*gaf.Future[internal.CallToolOutput], len(toolCalls))
 					for i, toolCall := range toolCalls {
 						// Basic validation of the tool call structure received from the LLM.
 						if toolCall.Type != openai.ToolTypeFunction || toolCall.Function.Name == "" {
 							errMsg := fmt.Sprintf("invalid tool call from LLM on iteration %d: type=%s, id=%s, function_name=%s", iter, toolCall.Type, toolCall.ID, toolCall.Function.Name)
 							// Create an error handle for this specific failed call.
-							errorHandle := heart.IntoError[internal.CallToolOutput](errors.New(errMsg))
+							errorHandle := gaf.IntoError[internal.CallToolOutput](errors.New(errMsg))
 							// Wrap it in a future for consistent collection logic.
-							toolCallFutures[i] = heart.FanIn(loopCtx, errorHandle)
+							toolCallFutures[i] = gaf.FanIn(loopCtx, errorHandle)
 							continue // Skip starting the actual tool call node.
 						}
 
 						// Ensure MCP tools were listed if needed (should be guaranteed by mcpToolsAvailable check earlier).
 						if !mcpToolsAvailable && len(originalReq.Tools) == 0 { // Check if *any* tools were expected.
 							errMsg := fmt.Sprintf("LLM requested tool '%s' but no tools were listed or provided initially in MCP loop ('%s')", toolCall.Function.Name, loopCtx.BasePath)
-							errorHandle := heart.IntoError[internal.CallToolOutput](errors.New(errMsg))
-							toolCallFutures[i] = heart.FanIn(loopCtx, errorHandle)
+							errorHandle := gaf.IntoError[internal.CallToolOutput](errors.New(errMsg))
+							toolCallFutures[i] = gaf.FanIn(loopCtx, errorHandle)
 							continue
 						}
 
@@ -212,9 +213,9 @@ func mcpWorkflowHandler(
 							MCPToolsResult: toolsResult.MCPToolsResult, // Pass the map from listTools.
 						}
 						// Start the node to execute this specific tool call.
-						callHandle := callToolNodeDef.Start(heart.Into(callInput))
+						callHandle := callToolNodeDef.Start(gaf.Into(callInput))
 						// Collect the future for the result.
-						toolCallFutures[i] = heart.FanIn(loopCtx, callHandle)
+						toolCallFutures[i] = gaf.FanIn(loopCtx, callHandle)
 					}
 
 					// --- Collect Tool Results ---
@@ -276,7 +277,7 @@ func mcpWorkflowHandler(
 				// --- Exit Condition: Max Iterations Reached ---
 				// If the loop finished because max iterations were hit, return an error.
 				err := fmt.Errorf("middleware node '%s': %w (limit: %d)", loopCtx.BasePath, errMaxIterationsReached, maxToolIterations)
-				return heart.IntoError[openai.ChatCompletionResponse](err)
+				return gaf.IntoError[openai.ChatCompletionResponse](err)
 			}) // End NewNode function definition
 
 		// Return the handle for the loop node. Execution starts when this handle is resolved.
@@ -305,11 +306,11 @@ func mcpWorkflowHandler(
 // Returns:
 //   - A NodeDefinition that encapsulates the MCP tool handling logic.
 func WithMCP(
-	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
-) heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
+	nextNodeDef gaf.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
+) gaf.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
 	// Create the specific workflow handler function, capturing the necessary node definitions.
 	handler := mcpWorkflowHandler(nextNodeDef)
 
 	// Create and return the workflow definition for this middleware instance.
-	return heart.WorkflowFromFunc(mcpWorkflowID, handler)
+	return gaf.WorkflowFromFunc(mcpWorkflowID, handler)
 }

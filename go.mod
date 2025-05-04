@@ -1,4 +1,4 @@
-module heart
+module go-agent-framework
 
 go 1.23.4
 

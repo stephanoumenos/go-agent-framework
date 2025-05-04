@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 
-	"heart"
+	gaf "go-agent-framework"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -14,10 +14,10 @@ import (
 
 // ListToolsNodeTypeID is the NodeTypeID used for dependency injection lookup
 // for the internal ListTools node.
-const ListToolsNodeTypeID heart.NodeTypeID = "openai_mcp_middleware:listTools"
+const ListToolsNodeTypeID gaf.NodeTypeID = "openai_mcp_middleware:listTools"
 
 // ListToolsNodeID is the default NodeID for the ListTools node definition.
-const ListToolsNodeID heart.NodeID = "openai_list_tools"
+const ListToolsNodeID gaf.NodeID = "openai_list_tools"
 
 // ListToolsResult holds the results from listing tools via an MCP client.
 // It contains the tools formatted for OpenAI API requests and optionally the
@@ -46,7 +46,7 @@ type ListToolsInitializer struct {
 }
 
 // ID returns the NodeTypeID (openai_mcp_middleware:listTools) for this initializer.
-func (i *ListToolsInitializer) ID() heart.NodeTypeID {
+func (i *ListToolsInitializer) ID() gaf.NodeTypeID {
 	return ListToolsNodeTypeID
 }
 
@@ -70,7 +70,7 @@ type listToolsResolver struct {
 
 // Init initializes the resolver, creating the associated ListToolsInitializer.
 // Called by the framework during definition Start.
-func (r *listToolsResolver) Init() heart.NodeInitializer {
+func (r *listToolsResolver) Init() gaf.NodeInitializer {
 	if r.initializer == nil {
 		r.initializer = &ListToolsInitializer{}
 	}
@@ -147,17 +147,17 @@ func (r *listToolsResolver) Get(ctx context.Context, _ struct{}) (ListToolsResul
 
 // ListTools creates the NodeDefinition for the internal node responsible for
 // listing available MCP tools. This definition is used by the WithMCP middleware.
-func ListTools() heart.NodeDefinition[struct{}, ListToolsResult] {
-	return heart.DefineNode(ListToolsNodeID, &listToolsResolver{})
+func ListTools() gaf.NodeDefinition[struct{}, ListToolsResult] {
+	return gaf.DefineNode(ListToolsNodeID, &listToolsResolver{})
 }
 
 // --- Compile-time checks ---
 
 // Ensures listToolsResolver implements NodeResolver.
-var _ heart.NodeResolver[struct{}, ListToolsResult] = (*listToolsResolver)(nil)
+var _ gaf.NodeResolver[struct{}, ListToolsResult] = (*listToolsResolver)(nil)
 
 // Ensures ListToolsInitializer implements NodeInitializer.
-var _ heart.NodeInitializer = (*ListToolsInitializer)(nil)
+var _ gaf.NodeInitializer = (*ListToolsInitializer)(nil)
 
 // Ensures ListToolsInitializer implements DependencyInjectable with the MCPClient type.
-var _ heart.DependencyInjectable[mcpclient.MCPClient] = (*ListToolsInitializer)(nil)
+var _ gaf.DependencyInjectable[mcpclient.MCPClient] = (*ListToolsInitializer)(nil)

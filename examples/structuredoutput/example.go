@@ -8,10 +8,10 @@ import (
 	"os"
 	"time"
 
-	"heart"                                  // Provides core workflow definitions and execution.
-	"heart/nodes/openai"                     // Provides the base OpenAI chat completion node.
-	openaimw "heart/nodes/openai/middleware" // Provides middleware like WithStructuredOutput.
-	"heart/store"                            // Provides storage options for workflow state.
+	gaf "go-agent-framework"                              // Provides core workflow definitions and execution.
+	"go-agent-framework/nodes/openai"                     // Provides the base OpenAI chat completion node.
+	openaimw "go-agent-framework/nodes/openai/middleware" // Provides middleware like WithStructuredOutput.
+	"go-agent-framework/store"                            // Provides storage options for workflow state.
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client library.
 )
@@ -53,7 +53,7 @@ type NutInfo struct {
 //
 // Returns:
 //   - An ExecutionHandle that will resolve to the generated Recipe struct or an error.
-func structuredOutputWorkflowHandler(ctx heart.Context, recipeTopic string) heart.ExecutionHandle[Recipe] {
+func structuredOutputWorkflowHandler(ctx gaf.Context, recipeTopic string) gaf.ExecutionHandle[Recipe] {
 	// 1. Define the underlying LLM call node blueprint.
 	// This is the node that will actually make the API call to OpenAI.
 	// The middleware will wrap this definition.
@@ -92,10 +92,10 @@ func structuredOutputWorkflowHandler(ctx heart.Context, recipeTopic string) hear
 	// The input is the prepared ChatCompletionRequest.
 	// The output handle will resolve to the parsed Recipe struct.
 	// The context is implicitly passed via the node definition's creation scope.
-	recipeHandle := structuredOutputNodeDef.Start(heart.Into(request))
+	recipeHandle := structuredOutputNodeDef.Start(gaf.Into(request))
 
 	// 5. Return the handle to the final result.
-	// When this handle is resolved by heart.Execute, the middleware and the LLM call
+	// When this handle is resolved by gaf.Execute, the middleware and the LLM call
 	// will run, and the parsed Recipe struct will be returned.
 	return recipeHandle
 }
@@ -116,11 +116,11 @@ func main() {
 	client := goopenai.NewClient(apiKey)
 	// Inject the client instance using the standard openai.Inject function.
 	// This makes the client available to the underlying openai.CreateChatCompletion node.
-	if err := heart.Dependencies(openai.Inject(client)); err != nil {
+	if err := gaf.Dependencies(openai.Inject(client)); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up dependencies: %v\n", err)
 		os.Exit(1)
 	}
-	defer heart.ResetDependencies() // Usually done in test cleanup.
+	defer gaf.ResetDependencies() // Usually done in test cleanup.
 
 	// --- Store Setup ---
 	// Configure a file store for persisting workflow state.
@@ -134,8 +134,8 @@ func main() {
 
 	// --- Workflow Definition ---
 	// Define the workflow blueprint using the handler function.
-	workflowID := heart.NodeID("recipeGeneratorWorkflow")
-	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
+	workflowID := gaf.NodeID("recipeGeneratorWorkflow")
+	recipeWorkflowDef := gaf.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// --- Workflow Execution ---
 	fmt.Println("Defining and executing recipe workflow...")
@@ -147,14 +147,14 @@ func main() {
 
 	// Start the workflow LAZILY. This returns the root handle.
 	fmt.Println("Starting workflow (lazy)...")
-	workflowHandle := recipeWorkflowDef.Start(heart.Into(inputTopic))
+	workflowHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
 
 	// Execute the workflow graph and wait for the result (Recipe struct).
 	fmt.Println("Executing workflow and waiting for result...")
-	recipeResult, err := heart.Execute(
+	recipeResult, err := gaf.Execute(
 		workflowCtx,
 		workflowHandle,
-		heart.WithStore(fileStore), // Pass the store option.
+		gaf.WithStore(fileStore), // Pass the store option.
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow execution failed: %v\n", err)

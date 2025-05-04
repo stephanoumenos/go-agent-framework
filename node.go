@@ -1,5 +1,5 @@
 // ./node.go
-package heart
+package gaf
 
 import (
 	"context"
@@ -145,8 +145,8 @@ type node[In, Out any] struct {
 	path        NodePath // Path assigned at runtime by internalResolve (will be unique)
 }
 
-func (n *node[In, Out]) zero(Out)     {}
-func (n *node[In, Out]) heartHandle() {}
+func (n *node[In, Out]) zero(Out)   {}
+func (n *node[In, Out]) gafHandle() {}
 func (n *node[In, Out]) internal_getPath() NodePath {
 	if n.path == "" {
 		// Provide a more useful temporary path if available
@@ -158,7 +158,7 @@ func (n *node[In, Out]) internal_getPath() NodePath {
 	}
 	return n.path // Returns the unique path once set by internalResolve
 }
-func (n *node[In, Out]) internal_getDefinition() any { return n.d } // Return the concrete *definition
+func (n *node[In, Out]) internal_getDefinition() any  { return n.d } // Return the concrete *definition
 func (n *node[In, Out]) internal_getInputSource() any { return n.inputSource }
 
 func (n *node[In, Out]) internal_out() (any, error) {

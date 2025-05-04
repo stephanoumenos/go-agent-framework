@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"heart"              // Provides core workflow definitions and execution.
-	"heart/nodes/openai" // Provides pre-built nodes for OpenAI interaction.
-	"heart/store"        // Provides storage options for workflow state.
+	// Provides core workflow definitions and execution.
+	gaf "go-agent-framework"
+	"go-agent-framework/nodes/openai" // Provides pre-built nodes for OpenAI interaction.
+	"go-agent-framework/store"        // Provides storage options for workflow state.
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client library.
 )
@@ -30,10 +31,10 @@ type perspectives struct {
 //
 // It demonstrates:
 //   - Defining multiple independent branches of execution.
-//   - Using heart.NewNode to define a dynamic node that waits for dependencies.
-//   - Using heart.FanIn within NewNode to concurrently wait for multiple handles.
+//   - Using gaf.NewNode to define a dynamic node that waits for dependencies.
+//   - Using gaf.FanIn within NewNode to concurrently wait for multiple handles.
 //   - Chaining LLM calls based on the results of previous calls.
-func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.ExecutionHandle[perspectives] {
+func threePerspectivesWorkflowHandler(ctx gaf.Context, question string) gaf.ExecutionHandle[perspectives] {
 	// --- Branch 1: Optimistic Perspective ---
 	// Prepare the request for the optimistic LLM.
 	optimistRequest := goopenai.ChatCompletionRequest{
@@ -47,9 +48,9 @@ func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.
 	// Define the node blueprint for the optimistic call.
 	// NodeIDs like "optimist-view" are relative to the workflow's BasePath.
 	optimistNodeDef := openai.CreateChatCompletion("optimist-view")
-	// Start the node execution lazily, providing the input request via heart.Into.
+	// Start the node execution lazily, providing the input request via gaf.Into.
 	// This returns a handle representing the future result.
-	optimistNode := optimistNodeDef.Start(heart.Into(optimistRequest))
+	optimistNode := optimistNodeDef.Start(gaf.Into(optimistRequest))
 
 	// --- Branch 2: Pessimistic Perspective ---
 	// Prepare the request for the pessimistic LLM.
@@ -64,23 +65,23 @@ func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.
 	// Define the node blueprint for the pessimistic call.
 	pessimistNodeDef := openai.CreateChatCompletion("pessimist-view")
 	// Start the node execution lazily.
-	pessimistNode := pessimistNodeDef.Start(heart.Into(pessimistRequest))
+	pessimistNode := pessimistNodeDef.Start(gaf.Into(pessimistRequest))
 
 	// --- Synthesis Step using NewNode ---
 	// Define a dynamic node that depends on the results of the optimistic and pessimistic branches.
 	// NewNode takes the current context (ctx), a unique ID ("generate-realistic") within this context,
 	// and a function that defines the node's logic.
-	synthesisNode := heart.NewNode(
+	synthesisNode := gaf.NewNode(
 		ctx,                  // The context passed to the workflow handler.
 		"generate-realistic", // NodeID for this dynamic node.
 		// This function receives a NewNodeContext, allowing it to define and execute nodes
 		// within its own scoped execution environment.
-		func(synthesisCtx heart.NewNodeContext) heart.ExecutionHandle[perspectives] {
+		func(synthesisCtx gaf.NewNodeContext) gaf.ExecutionHandle[perspectives] {
 			// Use FanIn to wait for the results of the dependency handles (optimistNode, pessimistNode).
 			// FanIn takes the NewNodeContext and the handle(s) to wait for.
 			// It returns a Future, which allows retrieving the result once the dependency completes.
-			optimistFuture := heart.FanIn(synthesisCtx, optimistNode)
-			pessimistFuture := heart.FanIn(synthesisCtx, pessimistNode)
+			optimistFuture := gaf.FanIn(synthesisCtx, optimistNode)
+			pessimistFuture := gaf.FanIn(synthesisCtx, pessimistNode)
 
 			// Get the results from the futures. This blocks until both dependencies are complete.
 			// FanIn ensures dependencies execute concurrently where possible.
@@ -92,7 +93,7 @@ func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.
 			if fetchErrs != nil {
 				// If fetching failed, return an error handle immediately.
 				// The error will include the path of the failing dependency.
-				return heart.IntoError[perspectives](fetchErrs)
+				return gaf.IntoError[perspectives](fetchErrs)
 			}
 
 			// Extract the text content from the LLM responses.
@@ -101,7 +102,7 @@ func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.
 			extractErrs := errors.Join(errExtOpt, errExtPess)
 			if extractErrs != nil {
 				// If content extraction failed, return an error handle.
-				return heart.IntoError[perspectives](extractErrs)
+				return gaf.IntoError[perspectives](extractErrs)
 			}
 
 			// Prepare the prompt for the realistic synthesis LLM call, using the results.
@@ -125,24 +126,24 @@ func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.
 			// This node is defined *within* the NewNode context (synthesisCtx).
 			// Its path will be relative to the synthesisNode's path (e.g., "/threePerspectives:#0/generate-realistic:#0/realistic-synthesis:#0").
 			realisticNodeDef := openai.CreateChatCompletion("realistic-synthesis")
-			realisticNode := realisticNodeDef.Start(heart.Into(realisticRequest))
+			realisticNode := realisticNodeDef.Start(gaf.Into(realisticRequest))
 
 			// Use FanIn again to wait for the result of the realistic synthesis call.
-			realisticFuture := heart.FanIn(synthesisCtx, realisticNode)
+			realisticFuture := gaf.FanIn(synthesisCtx, realisticNode)
 
 			// Get the final realistic response.
 			realResp, errReal := realisticFuture.Get()
 			if errReal != nil {
 				// If the synthesis call failed, wrap the error and return an error handle.
 				err := fmt.Errorf("realistic synthesis failed within node '%s': %w", synthesisCtx.BasePath, errReal)
-				return heart.IntoError[perspectives](err)
+				return gaf.IntoError[perspectives](err)
 			}
 
 			// Extract the content from the final response.
 			realText, errExtReal := extractContent(realResp)
 			if errExtReal != nil {
 				err := fmt.Errorf("error extracting realistic content within node '%s': %w", synthesisCtx.BasePath, errExtReal)
-				return heart.IntoError[perspectives](err)
+				return gaf.IntoError[perspectives](err)
 			}
 
 			// Construct the final result structure.
@@ -153,12 +154,12 @@ func threePerspectivesWorkflowHandler(ctx heart.Context, question string) heart.
 			}
 
 			// Return a handle containing the final successful result.
-			return heart.Into(finalResult)
+			return gaf.Into(finalResult)
 		},
 	)
 
 	// Return the handle to the synthesisNode. The entire workflow will execute
-	// lazily when this handle is resolved (e.g., by heart.Execute).
+	// lazily when this handle is resolved (e.g., by gaf.Execute).
 	return synthesisNode
 }
 
@@ -174,13 +175,13 @@ func main() {
 	// Create the OpenAI client instance.
 	client := goopenai.NewClient(apiKey)
 	// Inject the client instance so it's available to openai.CreateChatCompletion nodes.
-	// heart.Dependencies should be called once during application setup.
-	if err := heart.Dependencies(openai.Inject(client)); err != nil {
+	// gaf.Dependencies should be called once during application setup.
+	if err := gaf.Dependencies(openai.Inject(client)); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up dependencies: %v\n", err)
 		os.Exit(1)
 	}
 	// Ensure dependencies are reset if this function is called multiple times in tests.
-	defer heart.ResetDependencies() // Usually done in test cleanup.
+	defer gaf.ResetDependencies() // Usually done in test cleanup.
 
 	// --- Store Setup ---
 	// Configure a file store to persist workflow state under './workflows_fanin'.
@@ -195,7 +196,7 @@ func main() {
 	// --- Workflow Definition ---
 	// Define the workflow blueprint using the handler function.
 	// "threePerspectives" is the top-level NodeID for this workflow definition.
-	threePerspectiveWorkflowDef := heart.WorkflowFromFunc("threePerspectives", threePerspectivesWorkflowHandler)
+	threePerspectiveWorkflowDef := gaf.WorkflowFromFunc("threePerspectives", threePerspectivesWorkflowHandler)
 
 	// --- Workflow Execution ---
 	fmt.Println("Defining 3-Perspective workflow...")
@@ -208,14 +209,14 @@ func main() {
 	// Start the workflow LAZILY by calling Start on the definition.
 	// This returns the root handle of the workflow instance. No execution happens yet.
 	fmt.Println("Starting workflow (lazy)...")
-	workflowHandle := threePerspectiveWorkflowDef.Start(heart.Into(inputQuestion))
+	workflowHandle := threePerspectiveWorkflowDef.Start(gaf.Into(inputQuestion))
 
 	// Execute the workflow graph starting from the root handle.
-	// This triggers the resolution process. heart.Execute blocks until the final
+	// This triggers the resolution process. gaf.Execute blocks until the final
 	// result (perspectives struct) is available or an error occurs.
 	// We pass the Go context and workflow options (like the store) to Execute.
 	fmt.Println("Executing workflow and waiting for result...")
-	perspectivesResult, err := heart.Execute(workflowCtx, workflowHandle, heart.WithStore(fileStore))
+	perspectivesResult, err := gaf.Execute(workflowCtx, workflowHandle, gaf.WithStore(fileStore))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow execution failed: %v\n", err)
 		// Check if the error was due to the waiting context being cancelled or timing out.

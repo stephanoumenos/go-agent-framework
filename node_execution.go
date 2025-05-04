@@ -1,5 +1,5 @@
 // ./node_execution.go
-package heart
+package gaf
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"heart/store"
+	"go-agent-framework/store"
 )
 
 // nodeExecution represents a single, stateful execution instance of an *atomic*
@@ -230,10 +230,10 @@ func (ne *nodeExecution[In, Out]) execute() {
 	resolverGoCtx := ne.workflowCtx.ctx
 
 	// --- START FIX for NewNode Context ---
-	// Wrap the Go context with the runtime heart.Context and the unique execution path.
+	// Wrap the Go context with the runtime gaf.Context and the unique execution path.
 	// This allows internal resolvers (like newNodeResolver) to access workflow-level
 	// context (store, registry, base path) when they execute.
-	resolverGoCtxWithValue := context.WithValue(resolverGoCtx, heartContextKey{}, ne.workflowCtx)
+	resolverGoCtxWithValue := context.WithValue(resolverGoCtx, gafContextKey{}, ne.workflowCtx)
 	resolverGoCtxWithValue = context.WithValue(resolverGoCtxWithValue, execPathKey{}, ne.execPath)
 	// --- END FIX for NewNode Context ---
 
@@ -244,7 +244,7 @@ func (ne *nodeExecution[In, Out]) execute() {
 		// This check prevents a nil pointer dereference if initialization failed unexpectedly.
 		panic(fmt.Sprintf("internal error: resolver is nil during execution for node %s", ne.execPath))
 	}
-	// Pass the context potentially augmented with heart values.
+	// Pass the context potentially augmented with gaf values.
 	execOut, execErr = ne.resolver.Get(resolverGoCtxWithValue, ne.inValue)
 
 	// Store the result or error from the resolver execution.

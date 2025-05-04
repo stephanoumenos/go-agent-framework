@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"heart"
-	"heart/nodes/openai" // Provides OpenAI node and DI injection.
-	"heart/store"        // Provides storage options (MemoryStore used here).
+	gaf "go-agent-framework"
+	"go-agent-framework/nodes/openai" // Provides OpenAI node and DI injection.
+	"go-agent-framework/store"        // Provides storage options (MemoryStore used here).
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client library.
 	"github.com/stretchr/testify/assert"         // For non-fatal assertions.
@@ -140,7 +140,7 @@ func TestStructuredOutputWorkflowIntegration(t *testing.T) {
 	// Add cleanup hook to reset global dependency injection state after the test.
 	// Crucial for test isolation.
 	t.Cleanup(func() {
-		heart.ResetDependencies()
+		gaf.ResetDependencies()
 	})
 
 	// 1. --- Setup Mock Client ---
@@ -165,14 +165,14 @@ func TestStructuredOutputWorkflowIntegration(t *testing.T) {
 
 	// 2. --- Setup Dependencies & Store ---
 	// Inject the configured mock client. This must happen *after* t.Cleanup is registered.
-	err := heart.Dependencies(openai.Inject(mockClient))
+	err := gaf.Dependencies(openai.Inject(mockClient))
 	require.NoError(t, err, "Failed to inject mock dependencies") // Use require for setup failures.
 	memStore := store.NewMemoryStore()                            // Use an in-memory store for the test.
 
 	// 3. --- Define Workflow ---
 	// Define the workflow using the handler from the main example code.
-	workflowID := heart.NodeID("recipeGeneratorWorkflowTest") // Unique ID for the test workflow.
-	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
+	workflowID := gaf.NodeID("recipeGeneratorWorkflowTest") // Unique ID for the test workflow.
+	recipeWorkflowDef := gaf.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// 4. --- Prepare Input ---
 	inputTopic := "Quick vegan chocolate chip cookies" // Input for the workflow handler.
@@ -183,9 +183,9 @@ func TestStructuredOutputWorkflowIntegration(t *testing.T) {
 	defer cancel()
 
 	// Start the workflow lazily.
-	resultHandle := recipeWorkflowDef.Start(heart.Into(inputTopic))
+	resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
 	// Execute the workflow and wait for the result.
-	recipeResult, err := heart.Execute(ctx, resultHandle, heart.WithStore(memStore))
+	recipeResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
 
 	// 6. --- Assertions ---
 	// Check for context errors first (e.g., timeout).
@@ -220,7 +220,7 @@ func TestStructuredOutputWorkflowIntegration(t *testing.T) {
 func TestStructuredOutputWorkflowIntegration_LLMError(t *testing.T) {
 	// Setup cleanup hook for DI state.
 	t.Cleanup(func() {
-		heart.ResetDependencies()
+		gaf.ResetDependencies()
 	})
 
 	// 1. --- Setup Mock Client to Return Error ---
@@ -235,13 +235,13 @@ func TestStructuredOutputWorkflowIntegration_LLMError(t *testing.T) {
 	}
 
 	// 2. --- Setup Dependencies & Store ---
-	err := heart.Dependencies(openai.Inject(mockClient))
+	err := gaf.Dependencies(openai.Inject(mockClient))
 	require.NoError(t, err, "Failed to inject mock dependencies")
 	memStore := store.NewMemoryStore()
 
 	// 3. --- Define Workflow ---
-	workflowID := heart.NodeID("recipeGeneratorWorkflowErrorTest")
-	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
+	workflowID := gaf.NodeID("recipeGeneratorWorkflowErrorTest")
+	recipeWorkflowDef := gaf.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// 4. --- Prepare Input ---
 	inputTopic := "Error case topic"
@@ -249,9 +249,9 @@ func TestStructuredOutputWorkflowIntegration_LLMError(t *testing.T) {
 	// 5. --- Execute Workflow ---
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	resultHandle := recipeWorkflowDef.Start(heart.Into(inputTopic))
+	resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
 	// Expect an error from Execute.
-	_, err = heart.Execute(ctx, resultHandle, heart.WithStore(memStore))
+	_, err = gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
 
 	// 6. --- Assertions ---
 	// Verify that an error was indeed returned.
@@ -280,7 +280,7 @@ func TestStructuredOutputWorkflowIntegration_LLMError(t *testing.T) {
 func TestStructuredOutputWorkflowIntegration_ParsingError(t *testing.T) {
 	// Setup cleanup hook for DI state.
 	t.Cleanup(func() {
-		heart.ResetDependencies()
+		gaf.ResetDependencies()
 	})
 
 	// 1. --- Setup Mock Client to Return Invalid JSON ---
@@ -294,13 +294,13 @@ func TestStructuredOutputWorkflowIntegration_ParsingError(t *testing.T) {
 	}
 
 	// 2. --- Setup Dependencies & Store ---
-	err := heart.Dependencies(openai.Inject(mockClient))
+	err := gaf.Dependencies(openai.Inject(mockClient))
 	require.NoError(t, err, "Failed to inject mock dependencies")
 	memStore := store.NewMemoryStore()
 
 	// 3. --- Define Workflow ---
-	workflowID := heart.NodeID("recipeGeneratorWorkflowParseErrorTest")
-	recipeWorkflowDef := heart.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
+	workflowID := gaf.NodeID("recipeGeneratorWorkflowParseErrorTest")
+	recipeWorkflowDef := gaf.WorkflowFromFunc(workflowID, structuredOutputWorkflowHandler)
 
 	// 4. --- Prepare Input ---
 	inputTopic := "Bad JSON topic"
@@ -308,9 +308,9 @@ func TestStructuredOutputWorkflowIntegration_ParsingError(t *testing.T) {
 	// 5. --- Execute Workflow ---
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	resultHandle := recipeWorkflowDef.Start(heart.Into(inputTopic))
+	resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
 	// Expect an error from Execute due to parsing failure.
-	_, err = heart.Execute(ctx, resultHandle, heart.WithStore(memStore))
+	_, err = gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
 
 	// 6. --- Assertions ---
 	// Verify that an error was returned.

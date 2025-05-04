@@ -8,7 +8,7 @@ import (
 )
 
 // ClientInterface defines the set of OpenAI client methods used by the
-// heart/nodes/openai package and its subpackages.
+// gaf/nodes/openai package and its subpackages.
 //
 // This interface serves two primary purposes:
 //  1. Breaking import cycles: Allows nodes (like CreateChatCompletion) and
@@ -23,6 +23,6 @@ import (
 type ClientInterface interface {
 	// CreateChatCompletion corresponds to the method in the go-openai client.
 	CreateChatCompletion(context.Context, openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
-	// Add other methods from openai.Client here if other heart/nodes/openai
+	// Add other methods from openai.Client here if other gaf/nodes/openai
 	// components require them (e.g., CreateEmbedding, CreateImage).
 }

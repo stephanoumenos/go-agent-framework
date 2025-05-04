@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"heart"              // Provides core workflow definitions and execution.
-	"heart/nodes/openai" // Provides OpenAI nodes used by the workflow.
-	"heart/store"        // Provides storage options (MemoryStore used here).
+	gaf "go-agent-framework"
+	"go-agent-framework/nodes/openai" // Provides OpenAI nodes used by the workflow.
+	"go-agent-framework/store"        // Provides storage options (MemoryStore used here).
 
+	// Provides core workflow definitions and execution.
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client.
 	"github.com/stretchr/testify/assert"         // For assertions.
 	"github.com/stretchr/testify/require"        // For setup checks and fatal assertions.
@@ -37,13 +38,13 @@ func TestThreePerspectivesWorkflowE2E(t *testing.T) {
 	// This is crucial for maintaining test isolation, especially if tests run sequentially
 	// without restarting the process.
 	t.Cleanup(func() {
-		heart.ResetDependencies()
+		gaf.ResetDependencies()
 	})
 
 	// 2. Setup REAL OpenAI Client, Dependencies & Store
 	realClient := goopenai.NewClient(apiKey)
-	// Inject the real client. heart.Dependencies is global, hence the need for ResetDependencies.
-	err := heart.Dependencies(openai.Inject(realClient))
+	// Inject the real client. gaf.Dependencies is global, hence the need for ResetDependencies.
+	err := gaf.Dependencies(openai.Inject(realClient))
 	require.NoError(t, err, "Failed to inject real dependencies") // Use require for setup failures.
 
 	// Use a MemoryStore for simplicity in E2E testing, as we mainly care about execution success.
@@ -51,7 +52,7 @@ func TestThreePerspectivesWorkflowE2E(t *testing.T) {
 
 	// 3. Define the workflow using the production handler.
 	// Give it a unique name for clarity in potential tracing/logging.
-	threePerspectiveWorkflowDef := heart.WorkflowFromFunc("threePerspectivesE2E", threePerspectivesWorkflowHandler)
+	threePerspectiveWorkflowDef := gaf.WorkflowFromFunc("threePerspectivesE2E", threePerspectivesWorkflowHandler)
 
 	// 4. Prepare Input for the workflow.
 	inputQuestion := "What are the potential benefits and drawbacks of federated learning for edge devices?"
@@ -61,11 +62,11 @@ func TestThreePerspectivesWorkflowE2E(t *testing.T) {
 	defer cancel()
 
 	// Start the workflow lazily.
-	resultHandle := threePerspectiveWorkflowDef.Start(heart.Into(inputQuestion))
+	resultHandle := threePerspectiveWorkflowDef.Start(gaf.Into(inputQuestion))
 
 	// Execute the workflow and wait for the final result.
-	// Pass the context and store options to heart.Execute.
-	perspectivesResult, err := heart.Execute(ctx, resultHandle, heart.WithStore(memStore))
+	// Pass the context and store options to gaf.Execute.
+	perspectivesResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
 
 	// --- Assertions ---
 	// 7. Check for execution errors, prioritizing context errors.

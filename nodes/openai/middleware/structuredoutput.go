@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"heart"
+	gaf "go-agent-framework"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
@@ -27,19 +27,19 @@ var (
 )
 
 // structuredOutputNodeID is the NodeID used for the node definition created by WithStructuredOutput.
-const structuredOutputNodeID heart.NodeID = "openai_structured_output"
+const structuredOutputNodeID gaf.NodeID = "openai_structured_output"
 
 // structuredOutputHandler generates the core WorkflowHandlerFunc for the structured output workflow.
 // It captures the 'next' node definition (the actual LLM call) to be used during execution.
 // The resulting handler modifies the request to enforce JSON Schema output based on SOut,
 // executes the nextNodeDef, and then parses the LLM response into SOut.
 func structuredOutputHandler[SOut any](
-	nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
-) heart.WorkflowHandlerFunc[openai.ChatCompletionRequest, SOut] {
+	nextNodeDef gaf.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
+) gaf.WorkflowHandlerFunc[openai.ChatCompletionRequest, SOut] {
 	// This is the function that will be executed when the workflow runs.
-	return func(ctx heart.Context, originalReq openai.ChatCompletionRequest) heart.ExecutionHandle[SOut] {
+	return func(ctx gaf.Context, originalReq openai.ChatCompletionRequest) gaf.ExecutionHandle[SOut] {
 		if nextNodeDef == nil {
-			return heart.IntoError[SOut](errStructuredOutputNilNextNodeDef)
+			return gaf.IntoError[SOut](errStructuredOutputNilNextNodeDef)
 		}
 
 		// 1. Prepare a zero value of the target struct SOut for schema generation
@@ -47,14 +47,14 @@ func structuredOutputHandler[SOut any](
 		var sOut SOut
 		if originalReq.ResponseFormat != nil {
 			err := fmt.Errorf("structured output ('%s'): %w", ctx.BasePath, errDuplicatedResponseFormat)
-			return heart.IntoError[SOut](err)
+			return gaf.IntoError[SOut](err)
 		}
 
 		// 2. Generate the JSON Schema for the target SOut type.
 		schema, err := jsonschema.GenerateSchemaForType(sOut)
 		if err != nil {
 			err = fmt.Errorf("structured output ('%s'): %w for type %T: %v", ctx.BasePath, errSchemaGenerationFailed, sOut, err)
-			return heart.IntoError[SOut](err)
+			return gaf.IntoError[SOut](err)
 		}
 
 		// 3. Create the modified ChatCompletionRequest.
@@ -72,22 +72,22 @@ func structuredOutputHandler[SOut any](
 		// to return JSON matching the schema, referencing the schema name ("output").
 
 		// 4. Start the execution of the *next* node (the actual LLM call) using the modified request.
-		llmNodeHandle := nextNodeDef.Start(heart.Into(modifiedReq))
+		llmNodeHandle := nextNodeDef.Start(gaf.Into(modifiedReq))
 
 		// 5. Define a final node using NewNode to parse the LLM response.
 		// This node depends on the llmNodeHandle completing successfully.
-		parserNodeID := heart.NodeID("parse_structured_response") // Local ID for the parsing node within the workflow.
-		parserNode := heart.NewNode(
+		parserNodeID := gaf.NodeID("parse_structured_response") // Local ID for the parsing node within the workflow.
+		parserNode := gaf.NewNode(
 			ctx,          // Use the workflow's context
 			parserNodeID, // Assign ID
-			func(parseCtx heart.NewNodeContext) heart.ExecutionHandle[SOut] { // Returns handle to final SOut type
+			func(parseCtx gaf.NewNodeContext) gaf.ExecutionHandle[SOut] { // Returns handle to final SOut type
 				// Resolve the result from the underlying LLM node using FanIn + Get.
-				llmResponseFuture := heart.FanIn(parseCtx, llmNodeHandle)
+				llmResponseFuture := gaf.FanIn(parseCtx, llmNodeHandle)
 				llmResponse, err := llmResponseFuture.Get() // Blocks until the LLM call completes
 				if err != nil {
 					// Error already happened in the LLM node, just propagate it, potentially adding context.
 					// Error will already contain the failing node's path.
-					return heart.IntoError[SOut](err)
+					return gaf.IntoError[SOut](err)
 				}
 
 				// Process the LLM response: check for content and unmarshal it into SOut.
@@ -98,7 +98,7 @@ func structuredOutputHandler[SOut any](
 					}
 					err = fmt.Errorf("structured output ('%s' -> '%s'): %w (finish reason: %s)",
 						ctx.BasePath, parserNodeID, errNoContentFromLLM, finishReason)
-					return heart.IntoError[SOut](err)
+					return gaf.IntoError[SOut](err)
 				}
 
 				llmContent := llmResponse.Choices[0].Message.Content
@@ -108,11 +108,11 @@ func structuredOutputHandler[SOut any](
 					// Provide detailed error including the type and the content that failed to parse.
 					err = fmt.Errorf("structured output ('%s' -> '%s'): %w: failed to unmarshal LLM content into %T: %v. Raw Content: %s",
 						ctx.BasePath, parserNodeID, errParsingFailed, sOut, err, llmContent)
-					return heart.IntoError[SOut](err)
+					return gaf.IntoError[SOut](err)
 				}
 
 				// Return a handle containing the successfully parsed SOut struct.
-				return heart.Into(sOut)
+				return gaf.Into(sOut)
 			},
 		)
 
@@ -145,11 +145,11 @@ func structuredOutputHandler[SOut any](
 // Returns:
 //   - A NodeDefinition that takes an `openai.ChatCompletionRequest` as input and produces
 //     an `SOut` struct as output, encapsulating the structured output logic.
-func WithStructuredOutput[SOut any](nextNodeDef heart.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) heart.NodeDefinition[openai.ChatCompletionRequest, SOut] {
+func WithStructuredOutput[SOut any](nextNodeDef gaf.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse]) gaf.NodeDefinition[openai.ChatCompletionRequest, SOut] {
 	// Generate the handler function, capturing the nextNodeDef.
 	handler := structuredOutputHandler[SOut](nextNodeDef)
 
 	// Define and return the NodeDefinition for this structured output workflow.
 	// Use the structuredOutputNodeID as the underlying type identifier.
-	return heart.WorkflowFromFunc(structuredOutputNodeID, handler)
+	return gaf.WorkflowFromFunc(structuredOutputNodeID, handler)
 }
