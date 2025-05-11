@@ -142,3 +142,25 @@ See the `./examples` directory for more detailed usage patterns.
 - **`Future[T]`**: Returned by `FanIn`. Represents the eventual result of a dependency. Use `future.Get()` to retrieve the value.
 - **Dependency Injection**: Nodes declare dependencies via `DependencyInjectable[Dep]`. Dependencies are registered globally via `gaf.Dependencies(...)`.
 - **`store.Store`**: Interface for persisting workflow state. Implementations (`MemoryStore`, `FileStore`) passed via `gaf.WithStore(...)`.
+
+## Running tests
+
+### Unit tests
+
+```bash
+❯ go test ./examples/...
+ok      go-agent-framework/examples/fanin       0.176s
+ok      go-agent-framework/examples/mcp 0.397s
+ok      go-agent-framework/examples/simple_chain        0.596s
+ok      go-agent-framework/examples/structuredoutput    0.428s
+```
+
+### e2e tests
+
+```bash
+❯ OPENAI_AUTH_TOKEN="YOUR_TOKEN_HERE" go test -tags="e2e" ./examples/...
+ok      go-agent-framework/examples/fanin       0.669s
+ok      go-agent-framework/examples/mcp 0.415s
+ok      go-agent-framework/examples/simple_chain        0.466s
+ok      go-agent-framework/examples/structuredoutput    0.835s
+```
