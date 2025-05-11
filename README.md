@@ -199,25 +199,19 @@ func main() {
 	memStore := store.NewMemoryStore()
 
 	// 4. Execute the Workflow
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := context.Background()
+	fileStore, _ := store.NewFileStore("workflow_data") // Example store
+	input := "some input string"
 
-	// Input for this specific workflow run
-	workflowInput := "hello world"
-
-	// Start the workflow definition, getting the root handle (still lazy)
-	finalHandle := SimpleWorkflow.Start(gaf.Into(workflowInput))
-
-	// Execute triggers the computation graph and waits for the result
-	// Pass the memory store via gaf.WithStore
-	result, err := gaf.Execute(ctx, finalHandle, gaf.WithStore(memStore))
+	// Execute the workflow directly
+	output, err := gaf.ExecuteWorkflow(ctx, SimpleWorkflow, input, gaf.WithStore(fileStore))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow failed: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Input: %s\n", workflowInput)
-	fmt.Printf("Result: %s\n", result) // Output: HELLO WORLD
+	fmt.Printf("Input: %s\n", input)
+	fmt.Printf("Result: %s\n", output) // Output: HELLO WORLD
 }
 ```
 
@@ -226,8 +220,9 @@ func main() {
 - **`NodeDefinition[In, Out]`**: A reusable, immutable blueprint for a unit of work (atomic node or composite workflow). Created via `gaf.DefineNode` or `gaf.WorkflowFromFunc`. Contains a base `NodeID`.
 - **`NodeResolver[In, Out]`**: Implements the core logic (`Get`) and initialization (`Init`) for an _atomic_ node definition.
 - **`NodeInitializer`**: Returned by `Init()`. Provides a `NodeTypeID` used for matching dependencies during injection. Can implement `DependencyInjectable[Dep]`.
-- **`ExecutionHandle[Out]`**: A lightweight handle representing a future result of type `Out` for a specific node/workflow _instance_ in the graph. Obtained by calling `Start()` on a `NodeDefinition`. Acts as input for downstream nodes. It embodies the lazy execution model. Each handle instance gets a unique `NodePath` (e.g., `/workflowA:#0/nodeB:#1`) during execution.
+- **`ExecutionHandle[Out]`**: A lightweight handle representing a future result of type `Out` for a specific node/workflow _instance_ in the graph. Obtained by calling `Start()` on a `NodeDefinition` _within_ a workflow handler or `NewNode` function. Acts as input for downstream nodes. It embodies the lazy execution model. Each handle instance gets a unique `NodePath` (e.g., `/workflowA:#0/nodeB:#1`) during execution.
 - **`gaf.Execute`**: The top-level function to trigger the execution of a graph defined by a root `ExecutionHandle`. Manages the run context (`Context`), execution registry, persistence, and waits for the final result.
+- **`gaf.ExecuteWorkflow`**: The top-level function to trigger the execution of a `WorkflowDefinition`. It takes the workflow definition itself and the direct input value. Manages the run context (`Context`), execution registry, persistence, and waits for the final result.
 - **`gaf.Context`**: Passed to `WorkflowHandlerFunc` and `NewNode` functions. Provides access to the workflow's execution scope (UUID, BasePath, registry), the cancellable Go `context.Context`, and the `store.Store`.
 - **`gaf.NewNode`**: Allows defining anonymous, inline workflow steps (subgraphs) within a `WorkflowHandlerFunc`. Enables complex dynamic branching and joining logic. Receives `NewNodeContext`.
 - **`gaf.FanIn`**: Used within `gaf.NewNode` functions to concurrently await results from one or more dependency `ExecutionHandle`s, returning a `Future[T]`. Useful for implementing fan-in/join patterns explicitly.

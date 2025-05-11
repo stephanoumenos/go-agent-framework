@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"sync"
 	"testing"
@@ -270,8 +271,12 @@ func TestMCPWorkflowIntegration(t *testing.T) {
 
 	// --- Setup Tool Node & Adapt for MCP (same as main) ---
 	addNodeDef := DefineAddNode("adder_test_integration")
+	// Wrap addNodeDef in a workflow for the MCP adapter
+	addWorkflowDef := gaf.WorkflowFromFunc("adderWorkflow_test_integration", func(ctx gaf.Context, input AddInput) gaf.ExecutionHandle[AddOutput] {
+		return addNodeDef.Start(gaf.Into(input))
+	})
 	adaptedTool := mcp.IntoTool(
-		addNodeDef, addToolSchema, mapToolRequest, mapToolResponse,
+		addWorkflowDef, addToolSchema, mapToolRequest, mapToolResponse, // Use addWorkflowDef
 	)
 
 	// --- Setup and Start Local MCP Server (using helper) ---
@@ -311,8 +316,9 @@ func TestMCPWorkflowIntegration(t *testing.T) {
 	defer cancel()
 
 	fmt.Println("--- Starting Workflow Execution in Test ---")
-	workflowHandle := mainWorkflowDef.Start(gaf.Into(inputPrompt))
-	finalResult, err := gaf.Execute(execCtx, workflowHandle, gaf.WithStore(memStore))
+	// workflowHandle := mainWorkflowDef.Start(gaf.Into(inputPrompt)) // Old way
+	// finalResult, err := gaf.Execute(execCtx, workflowHandle, gaf.WithStore(memStore)) // Old way
+	finalResult, err := gaf.ExecuteWorkflow(execCtx, mainWorkflowDef, inputPrompt, gaf.WithStore(memStore)) // New way
 	fmt.Println("--- Finished Workflow Execution in Test ---")
 
 	// --- Assertions ---
@@ -341,4 +347,108 @@ func TestMCPWorkflowIntegration(t *testing.T) {
 	fmt.Println("Integration test completed successfully.")
 }
 
-// TODO: Add tests for error cases (e.g., tool execution fails, MCP client error, OpenAI error in one of the calls)
+// TestE2EMCPWorkflow tests the full MCP flow with a real OpenAI API call (if OPENAI_API_KEY is set).
+// It uses a live local MCP server and client.
+func TestE2EMCPWorkflow(t *testing.T) {
+	// t.Parallel()
+
+	// --- Skip if no API Key ---
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY not set, skipping E2E test.")
+	}
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode.")
+	}
+
+	// --- Test Setup ---
+	// Basic inputs, similar to the integration test but will go to the real API
+	inputA := 7
+	inputB := 8
+	// expectedSum := inputA + inputB // 15 // Unused, LLM will provide the sum
+	inputPrompt := fmt.Sprintf("Please calculate %d plus %d using your tool and tell me the result. Then tell me a joke about the sum.", inputA, inputB)
+
+	// --- Setup Tool Node (Adder) ---
+	addNodeDef := DefineAddNode("e2e_adder") // Use a unique ID for the E2E test
+	// Wrap addNodeDef in a workflow for the MCP adapter
+	addWorkflowDefE2E := gaf.WorkflowFromFunc("adderWorkflow_e2e", func(ctx gaf.Context, input AddInput) gaf.ExecutionHandle[AddOutput] {
+		// Use the addNodeDef captured from the outer scope.
+		return addNodeDef.Start(gaf.Into(input))
+	})
+
+	// --- Adapt Tool for MCP ---
+	adaptedTool := mcp.IntoTool(
+		addWorkflowDefE2E, // Use addWorkflowDefE2E
+		addToolSchema,     // Defined in example.go
+		mapToolRequest,    // Defined in example.go
+		mapToolResponse,   // Defined in example.go
+	)
+
+	// --- Setup Local MCP Server ---
+	serverSSEURL, stopServerFunc, serverErr := setupAndStartMCPServer(adaptedTool)
+	require.NoError(t, serverErr, "E2E: Failed to start MCP server")
+	defer stopServerFunc()
+
+	// --- Setup Local MCP Client ---
+	mcpTestClient, stopClientFunc, clientErr := setupAndStartMCPClient(serverSSEURL)
+	require.NoError(t, clientErr, "E2E: Failed to start MCP client")
+	defer stopClientFunc()
+
+	// --- Setup Real OpenAI Client ---
+	openaiClient := goopenai.NewClient(apiKey)
+
+	// --- Setup Dependency Injection ---
+	// Inject REAL OpenAI client and REAL MCP client (connected to local test server)
+	injectErr := gaf.Dependencies( // Use a different variable name to avoid shadowing
+		openai.Inject(openaiClient),           // Use the REAL OpenAI client
+		openai.InjectMCPClient(mcpTestClient), // Use the REAL client connected to the test server
+	)
+	require.NoError(t, injectErr, "E2E: Failed to inject dependencies")
+	t.Cleanup(func() {
+		fmt.Println("E2E: Resetting go-agent-framework dependencies...")
+		gaf.ResetDependencies()
+	}) // Reset DI state after test
+
+	// --- Define Workflow ---
+	workflowID := gaf.NodeID("e2eMCPWorkflow")
+	mainWorkflowDef := gaf.WorkflowFromFunc(workflowID, mainWorkflowHandler) // mainWorkflowHandler from example.go
+
+	// --- Execute Workflow ---
+	memStore := store.NewMemoryStore() // Use memory store for E2E test simplicity
+	// Use a longer timeout for real API calls
+	execCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	fmt.Println("--- Starting E2E Workflow Execution ---")
+	finalResult, execWorkflowErr := gaf.ExecuteWorkflow(execCtx, mainWorkflowDef, inputPrompt, gaf.WithStore(memStore)) // New way, new error variable
+	fmt.Println("--- Finished E2E Workflow Execution ---")
+
+	// --- Assertions ---
+	// Check for specific context errors first
+	if errors.Is(execWorkflowErr, context.DeadlineExceeded) {
+		t.Fatalf("E2E test failed waiting for result: Timeout exceeded (%v)", execCtx.Err())
+	}
+	if errors.Is(execWorkflowErr, context.Canceled) {
+		t.Fatalf("E2E test failed waiting for result: Context canceled (%v)", execCtx.Err())
+	}
+	// Check for general workflow execution errors (like API errors, tool errors)
+	require.NoError(t, execWorkflowErr, "E2E Workflow execution failed")
+
+	require.NotNil(t, finalResult, "E2E: Final result should not be nil")
+	require.NotEmpty(t, finalResult.Choices, "E2E: Expected at least one choice in the final response")
+
+	finalChoice := finalResult.Choices[0]
+	finalContent := finalChoice.Message.Content
+
+	t.Logf("E2E Final Response Content: %s", finalContent)
+	t.Logf("E2E Final Finish Reason: %s", finalChoice.FinishReason)
+
+	// 1. Verify the final response content contains the expected sum (15).
+	//    The exact wording can vary, so just check for the number.
+	assert.Contains(t, finalContent, strconv.Itoa(inputA+inputB), "E2E: Final response content should contain the sum")
+
+	// 2. Verify the final finish reason is 'stop'.
+	assert.Equal(t, goopenai.FinishReasonStop, finalChoice.FinishReason, "E2E: Final finish reason should be 'stop'")
+
+	// TODO: Add tests for error cases (e.g., tool execution fails, MCP client error, OpenAI error in one of the calls)
+}

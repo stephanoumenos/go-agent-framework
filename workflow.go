@@ -40,13 +40,43 @@ func newWorkflowResolver[In, Out any](nodeID NodeID, handler WorkflowHandlerFunc
 	return &workflowResolver[In, Out]{handler: handler, nodeID: nodeID}
 }
 
+// --- Workflow Definition ---
+
+// WorkflowDefinition represents a NodeDefinition that is specifically designated
+// as a top-level executable workflow.
+type WorkflowDefinition[In, Out any] interface {
+	NodeDefinition[In, Out]
+	isWorkflow() // Marker method to distinguish WorkflowDefinitions at compile time.
+}
+
+// concreteWorkflowDefinition is the concrete implementation of WorkflowDefinition.
+// It wraps a standard NodeDefinition.
+type concreteWorkflowDefinition[In, Out any] struct {
+	// underlyingNodeDef holds the actual NodeDefinition that provides the workflow's logic.
+	underlyingNodeDef NodeDefinition[In, Out]
+}
+
+// Start delegates to the underlying NodeDefinition's Start method.
+func (cwd *concreteWorkflowDefinition[In, Out]) Start(inputSource ExecutionHandle[In]) ExecutionHandle[Out] {
+	return cwd.underlyingNodeDef.Start(inputSource)
+}
+
+// internal_GetNodeID delegates to the underlying NodeDefinition's internal_GetNodeID method.
+func (cwd *concreteWorkflowDefinition[In, Out]) internal_GetNodeID() NodeID {
+	return cwd.underlyingNodeDef.internal_GetNodeID()
+}
+
+// isWorkflow is a marker method for the WorkflowDefinition interface.
+func (cwd *concreteWorkflowDefinition[In, Out]) isWorkflow() {}
+
 // WorkflowFromFunc creates a NodeDefinition for a workflow from a handler function.
 // It uses DefineNode internally, associating the provided nodeID and handler
 // with a workflowResolver.
-func WorkflowFromFunc[In, Out any](nodeID NodeID, handler WorkflowHandlerFunc[In, Out]) NodeDefinition[In, Out] {
+func WorkflowFromFunc[In, Out any](nodeID NodeID, handler WorkflowHandlerFunc[In, Out]) WorkflowDefinition[In, Out] {
 	resolver := newWorkflowResolver(nodeID, handler)
 	// DefineNode creates the *definition which holds the instance counter.
-	return DefineNode(nodeID, resolver)
+	coreNodeDef := DefineNode(nodeID, resolver)
+	return &concreteWorkflowDefinition[In, Out]{underlyingNodeDef: coreNodeDef}
 }
 
 // Init implements the NodeResolver interface. Workflows typically don't require

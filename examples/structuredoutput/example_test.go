@@ -183,9 +183,7 @@ func TestStructuredOutputWorkflowIntegration(t *testing.T) {
 	defer cancel()
 
 	// Start the workflow lazily.
-	resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
-	// Execute the workflow and wait for the result.
-	recipeResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
+	recipeResult, err := gaf.ExecuteWorkflow(ctx, recipeWorkflowDef, inputTopic, gaf.WithStore(memStore))
 
 	// 6. --- Assertions ---
 	// Check for context errors first (e.g., timeout).
@@ -249,9 +247,7 @@ func TestStructuredOutputWorkflowIntegration_LLMError(t *testing.T) {
 	// 5. --- Execute Workflow ---
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
-	// Expect an error from Execute.
-	_, err = gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
+	_, err = gaf.ExecuteWorkflow(ctx, recipeWorkflowDef, inputTopic, gaf.WithStore(memStore))
 
 	// 6. --- Assertions ---
 	// Verify that an error was indeed returned.
@@ -308,9 +304,7 @@ func TestStructuredOutputWorkflowIntegration_ParsingError(t *testing.T) {
 	// 5. --- Execute Workflow ---
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
-	// Expect an error from Execute due to parsing failure.
-	_, err = gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
+	_, err = gaf.ExecuteWorkflow(ctx, recipeWorkflowDef, inputTopic, gaf.WithStore(memStore))
 
 	// 6. --- Assertions ---
 	// Verify that an error was returned.

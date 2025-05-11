@@ -304,10 +304,10 @@ func mcpWorkflowHandler(
 //     `openai.ChatCompletionRequest` as input and produce `openai.ChatCompletionResponse`.
 //
 // Returns:
-//   - A NodeDefinition that encapsulates the MCP tool handling logic.
+//   - A WorkflowDefinition that encapsulates the MCP tool handling logic.
 func WithMCP(
 	nextNodeDef gaf.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse],
-) gaf.NodeDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
+) gaf.WorkflowDefinition[openai.ChatCompletionRequest, openai.ChatCompletionResponse] {
 	// Create the specific workflow handler function, capturing the necessary node definitions.
 	handler := mcpWorkflowHandler(nextNodeDef)
 

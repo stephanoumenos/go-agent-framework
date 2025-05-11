@@ -630,7 +630,8 @@ func NewNode[Out any](ctx Context, nodeID NodeID, fun func(ctx NewNodeContext) E
 
 // --- Execute (Top-Level Trigger) ---
 
-// Execute is the primary entry point for running a go-agent-framework workflow or node graph.
+// executeInternal is the primary internal logic for running a go-agent-framework workflow or node graph.
+// It was formerly the public `Execute` function.
 // It takes a Go context for cancellation, a handle to the final node/workflow
 // of the graph, and optional WorkflowOptions (like WithStore, WithUUID).
 //
@@ -639,7 +640,7 @@ func NewNode[Out any](ctx Context, nodeID NodeID, fun func(ctx NewNodeContext) E
 // provided handle using internalResolve. It waits for the entire graph connected
 // to the handle to complete and returns the final output value or any error
 // encountered during execution.
-func Execute[Out any](ctx context.Context, handle ExecutionHandle[Out], opts ...WorkflowOption) (Out, error) {
+func executeInternal[Out any](ctx context.Context, handle ExecutionHandle[Out], opts ...WorkflowOption) (Out, error) {
 	var zero Out // Zero value for error returns.
 	if handle == nil {
 		return zero, errors.New("Execute called with a nil handle")
@@ -688,6 +689,39 @@ func Execute[Out any](ctx context.Context, handle ExecutionHandle[Out], opts ...
 	// TODO: Persist final graph status (e.g., success/failure) in the store?
 
 	return result, err
+}
+
+// ExecuteWorkflow is the primary public entry point for running a go-agent-framework workflow.
+// It requires a WorkflowDefinition, the direct input value for the workflow,
+// a Go context for cancellation, and optional WorkflowOptions.
+//
+// It creates an initial ExecutionHandle from the input value, starts the workflow
+// with this handle, and then executes the resulting graph.
+func ExecuteWorkflow[WFIn, WFOut any](
+	ctx context.Context,
+	workflow WorkflowDefinition[WFIn, WFOut],
+	inputValue WFIn,
+	opts ...WorkflowOption,
+) (WFOut, error) {
+	var zero WFOut
+	if workflow == nil {
+		return zero, errors.New("ExecuteWorkflow called with a nil workflow definition")
+	}
+
+	// Create an ExecutionHandle for the initial input value.
+	inputHandle := Into(inputValue)
+	// While Into() itself doesn't return nil for non-error case, good to be defensive
+	// or if Into() behavior changes for specific types in the future.
+	if inputHandle == nil {
+		return zero, errors.New("ExecuteWorkflow: failed to create internal input handle from input value")
+	}
+
+	outputHandle := workflow.Start(inputHandle)
+	if outputHandle == nil {
+		return zero, errors.New("workflow.Start() returned a nil handle; check workflow definition")
+	}
+
+	return executeInternal[WFOut](ctx, outputHandle, opts...)
 }
 
 // --- Internal context keys ---

@@ -37,8 +37,12 @@ func TestMCPWorkflowE2E(t *testing.T) {
 
 	// --- Setup Tool Node & Adapt for MCP (same as main) ---
 	addNodeDef := DefineAddNode("adder_e2e")
+	// Wrap addNodeDef in a workflow for the MCP adapter
+	addWorkflowDef := gaf.WorkflowFromFunc("adderWorkflow_e2e", func(ctx gaf.Context, input AddInput) gaf.ExecutionHandle[AddOutput] {
+		return addNodeDef.Start(gaf.Into(input))
+	})
 	adaptedTool := mcp.IntoTool(
-		addNodeDef, addToolSchema, mapToolRequest, mapToolResponse,
+		addWorkflowDef, addToolSchema, mapToolRequest, mapToolResponse, // Use addWorkflowDef
 	)
 
 	// --- Setup and Start Local MCP Server (using helper) ---
@@ -81,8 +85,9 @@ func TestMCPWorkflowE2E(t *testing.T) {
 	defer cancel()
 
 	fmt.Println("--- Starting E2E Workflow Execution ---")
-	workflowHandle := mainWorkflowDef.Start(gaf.Into(inputPrompt))
-	finalResult, err := gaf.Execute(execCtx, workflowHandle, gaf.WithStore(memStore))
+	// workflowHandle := mainWorkflowDef.Start(gaf.Into(inputPrompt)) // Old way
+	// finalResult, err := gaf.Execute(execCtx, workflowHandle, gaf.WithStore(memStore)) // Old way
+	finalResult, err := gaf.ExecuteWorkflow(execCtx, mainWorkflowDef, inputPrompt, gaf.WithStore(memStore)) // New way
 	fmt.Println("--- Finished E2E Workflow Execution ---")
 
 	// --- Assertions ---

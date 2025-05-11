@@ -129,7 +129,6 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("Using FileStore at './workflows_structured_output'")
-	// defer os.RemoveAll("./workflows_structured_output") // Optional cleanup
 
 	// --- Workflow Definition ---
 	// Define the workflow blueprint using the handler function.
@@ -144,17 +143,9 @@ func main() {
 
 	inputTopic := "Quick vegan chocolate chip cookies"
 
-	// Start the workflow LAZILY. This returns the root handle.
-	fmt.Println("Starting workflow (lazy)...")
-	workflowHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
-
 	// Execute the workflow graph and wait for the result (Recipe struct).
 	fmt.Println("Executing workflow and waiting for result...")
-	recipeResult, err := gaf.Execute(
-		workflowCtx,
-		workflowHandle,
-		gaf.WithStore(fileStore), // Pass the store option.
-	)
+	recipeResult, err := gaf.ExecuteWorkflow(workflowCtx, recipeWorkflowDef, inputTopic, gaf.WithStore(fileStore))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow execution failed: %v\n", err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

@@ -60,10 +60,11 @@ func TestStructuredOutputWorkflowE2E(t *testing.T) {
 	defer cancel()
 
 	// Start the workflow lazily.
-	resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic))
+	// resultHandle := recipeWorkflowDef.Start(gaf.Into(inputTopic)) // Old way
 
 	// Execute and wait for the result (Recipe struct).
-	recipeResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
+	// recipeResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore)) // Old way
+	recipeResult, err := gaf.ExecuteWorkflow(ctx, recipeWorkflowDef, inputTopic, gaf.WithStore(memStore)) // New way
 
 	// --- Assertions ---
 	// 6. Check for execution errors, prioritizing context errors.

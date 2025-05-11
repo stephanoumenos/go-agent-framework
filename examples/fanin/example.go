@@ -206,17 +206,12 @@ func main() {
 
 	inputQuestion := "Should companies invest heavily in custom AGI research?"
 
-	// Start the workflow LAZILY by calling Start on the definition.
-	// This returns the root handle of the workflow instance. No execution happens yet.
-	fmt.Println("Starting workflow (lazy)...")
-	workflowHandle := threePerspectiveWorkflowDef.Start(gaf.Into(inputQuestion))
-
-	// Execute the workflow graph starting from the root handle.
-	// This triggers the resolution process. gaf.Execute blocks until the final
+	// Execute the workflow graph.
+	// This triggers the resolution process. gaf.ExecuteWorkflow blocks until the final
 	// result (perspectives struct) is available or an error occurs.
-	// We pass the Go context and workflow options (like the store) to Execute.
+	// We pass the Go context and workflow options (like the store) to ExecuteWorkflow.
 	fmt.Println("Executing workflow and waiting for result...")
-	perspectivesResult, err := gaf.Execute(workflowCtx, workflowHandle, gaf.WithStore(fileStore))
+	perspectivesResult, err := gaf.ExecuteWorkflow(workflowCtx, threePerspectiveWorkflowDef, inputQuestion, gaf.WithStore(fileStore))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Workflow execution failed: %v\n", err)
 		// Check if the error was due to the waiting context being cancelled or timing out.

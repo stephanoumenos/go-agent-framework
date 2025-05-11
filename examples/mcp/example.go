@@ -73,6 +73,14 @@ func DefineAddNode(nodeID gaf.NodeID) gaf.NodeDefinition[AddInput, AddOutput] {
 	return gaf.DefineNode(nodeID, &addNodeResolver{})
 }
 
+// addWorkflowHandler is a simple workflow handler that executes the addNode.
+func addWorkflowHandler(ctx gaf.Context, input AddInput) gaf.ExecutionHandle[AddOutput] {
+	// DefineAddNode is called here to get the NodeDefinition.
+	// In a real app, addNodeDef might be defined globally or passed in.
+	addNodeDef := DefineAddNode("adderNodeInWorkflow") // NodeID for the inner node
+	return addNodeDef.Start(gaf.Into(input))
+}
+
 // --- 2. Define MCP Tool Schema and Mappers ---
 
 // addToolSchema defines the schema for the 'add_numbers' tool according to the
@@ -200,21 +208,21 @@ func mainWorkflowHandler(ctx gaf.Context, prompt string) gaf.ExecutionHandle[goo
 func main() {
 	fmt.Println("--- Starting go-agent-framework MCP Example ---")
 
-	// --- Setup Tool Node ---
-	// Create the gaf node definition for the adder tool.
-	addNodeDef := DefineAddNode("adder")
+	// --- Setup Tool Workflow Definition ---
+	// Create the gaf workflow definition for the adder tool.
+	addWorkflowDef := gaf.WorkflowFromFunc("adderWorkflow", addWorkflowHandler)
 
 	// --- Adapt Tool for MCP ---
-	// Use gaf/mcp.IntoTool to bridge the gaf node definition (addNodeDef),
+	// Use gaf/mcp.IntoTool to bridge the gaf workflow definition (addWorkflowDef),
 	// its MCP schema (addToolSchema), and the mapping functions (mapToolRequest, mapToolResponse).
 	// This creates an MCPTool implementation that can be used with an MCP server.
 	adaptedTool := mcp.IntoTool(
-		addNodeDef,
+		addWorkflowDef, // Changed from addNodeDef
 		addToolSchema,
 		mapToolRequest,
 		mapToolResponse,
 	)
-	fmt.Printf("Adapted gaf node as MCP tool '%s'\n", adaptedTool.Definition().Name)
+	fmt.Printf("Adapted gaf workflow as MCP tool '%s'\n", adaptedTool.Definition().Name)
 
 	// --- Setup Local MCP Server ---
 	// Create a new MCP server instance.
@@ -318,11 +326,8 @@ func main() {
 	execCtx, execCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer execCancel()
 
-	inputPrompt := "Can you please tell me what 5 plus 7 equals?"
-	fmt.Printf("\n--- Executing Workflow ---\nInput Prompt: \"%s\"\n", inputPrompt)
-
-	// Start the workflow lazily.
-	workflowHandle := mainWorkflowDef.Start(gaf.Into(inputPrompt))
+	workflowInput := "Call the add_numbers tool to sum 123 and 456. Then, based on the sum, tell me a joke."
+	fmt.Printf("\n--- Executing Workflow ---\nInput Prompt: \"%s\"\n", workflowInput)
 
 	// Setup a store for workflow state persistence. FileStore is used here.
 	fileStore, storeErr := store.NewFileStore("workflows_mcp")
@@ -333,8 +338,8 @@ func main() {
 	// defer os.RemoveAll("./workflows_mcp")
 
 	// Execute the workflow and wait for the final result.
-	// gaf.Execute triggers the resolution process starting from the handle.
-	finalResult, execErr := gaf.Execute(execCtx, workflowHandle, gaf.WithStore(fileStore))
+	// gaf.ExecuteWorkflow triggers the resolution process.
+	finalResult, execErr := gaf.ExecuteWorkflow(execCtx, mainWorkflowDef, workflowInput, gaf.WithStore(fileStore))
 
 	fmt.Println("\n--- Workflow Execution Finished ---")
 

@@ -62,11 +62,12 @@ func TestThreePerspectivesWorkflowE2E(t *testing.T) {
 	defer cancel()
 
 	// Start the workflow lazily.
-	resultHandle := threePerspectiveWorkflowDef.Start(gaf.Into(inputQuestion))
+	// resultHandle := threePerspectiveWorkflowDef.Start(gaf.Into(inputQuestion)) // Old way
 
 	// Execute the workflow and wait for the final result.
 	// Pass the context and store options to gaf.Execute.
-	perspectivesResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore))
+	// perspectivesResult, err := gaf.Execute(ctx, resultHandle, gaf.WithStore(memStore)) // Old way
+	perspectivesResult, err := gaf.ExecuteWorkflow(ctx, threePerspectiveWorkflowDef, inputQuestion, gaf.WithStore(memStore)) // New way
 
 	// --- Assertions ---
 	// 7. Check for execution errors, prioritizing context errors.
