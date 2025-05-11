@@ -21,9 +21,8 @@ import (
 func TestStoryWorkflowHandler(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		gaf.ResetDependencies()
-		var callCount int32 // Tracks the number of API calls to the mock server.
+		var callCount int32
 
-		// Expected outputs for the two LLM calls
 		expectedStoryIdea := "A curious squirrel invents a time machine powered by acorns."
 		expectedExpandedStory := "Deep in a sun-dappled forest, Squeaky, a squirrel with an unusually bright glint in his eye, tinkered relentlessly. Driven by an insatiable curiosity and an abundance of acorns, he finally completed his masterpiece: a miniature time machine, its core humming with the concentrated energy of a thousand roasted nuts, ready to whisk him through the ages."
 

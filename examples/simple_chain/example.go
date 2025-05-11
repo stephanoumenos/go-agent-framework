@@ -8,18 +8,15 @@ import (
 
 	gaf "go-agent-framework"
 
-	// oainode "go-agent-framework/nodes/openai"
-	"go-agent-framework/nodes/openai" // Assuming package name is 'openai'
+	"go-agent-framework/nodes/openai"
 
-	// "github.com/sashabaranov/go-openai"
 	goopenai "github.com/sashabaranov/go-openai"
 )
 
 // storyWorkflowHandler defines the logic for generating and expanding a story idea.
 // It takes a gaf.Context and an initial prompt string, and returns a handle to the final expanded story.
 func storyWorkflowHandler(gctx gaf.Context, initialPrompt string) gaf.ExecutionHandle[goopenai.ChatCompletionResponse] {
-	// NodeDefinition can be created here or passed in if it's shared.
-	chatNodeDef := openai.CreateChatCompletion("chat_llm") // Assuming package name is 'openai'
+	chatNodeDef := openai.CreateChatCompletion("chat_llm")
 
 	// 1. First LLM Call: Generate a creative story idea
 	initialRequest := goopenai.ChatCompletionRequest{
@@ -73,21 +70,16 @@ func main() {
 		fmt.Println("To run this example fully, please set your OPENAI_API_KEY.")
 		os.Exit(0)
 	}
-	// client := openai.NewClient(apiKey)
 	client := goopenai.NewClient(apiKey)
 
 	// Inject the OpenAI client dependency.
-	// This should be done once, before defining nodes that need the client.
-	// if err := gaf.Dependencies(oainode.Inject(client)); err != nil {
-	if err := gaf.Dependencies(openai.Inject(client)); err != nil { // Assuming package name is 'openai'
+	if err := gaf.Dependencies(openai.Inject(client)); err != nil {
 		log.Fatalf("Error setting up dependencies: %v", err)
 	}
 
-	// Define the input for this specific workflow run.
 	workflowInput := "Tell me a short, one-sentence creative story idea."
 
 	fmt.Println("Executing story chain workflow...")
-	// Execute triggers the lazy computation graph and waits for the final result.
 	finalResponse, err := gaf.ExecuteWorkflow(ctx, storyChainWorkflow, workflowInput)
 	if err != nil {
 		log.Fatalf("Error executing GAF graph: %v", err)
