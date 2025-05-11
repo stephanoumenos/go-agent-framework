@@ -120,7 +120,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error setting up dependencies: %v\n", err)
 		os.Exit(1)
 	}
-	defer gaf.ResetDependencies() // Usually done in test cleanup.
 
 	// --- Store Setup ---
 	// Configure a file store for persisting workflow state.

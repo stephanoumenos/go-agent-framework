@@ -128,6 +128,120 @@ type NodeDefinition[In, Out any] interface {
 	internal_GetNodeID() NodeID
 }
 
+// boundExecutionHandle is an ExecutionHandle that represents the action of
+// taking an existing ExecutionHandle (exec), applying a mapping function (fun)
+// to its output, and then using that result as the input to another
+// NodeDefinition (def). It's a stateless way to chain operations.
+// The execution framework is responsible for orchestrating the steps:
+// 1. Resolve 'exec'.
+// 2. Apply 'fun' to 'exec"s output.
+// 3. Start 'def' with the result of 'fun'.
+// The result of the bound operation is the result of the 'def.Start()' invocation.
+type boundExecutionHandle[InDef, OutDef, OutExec any] struct {
+	def  NodeDefinition[InDef, OutDef] // The target definition to start.
+	exec ExecutionHandle[OutExec]      // The preceding handle whose output is mapped.
+	fun  func(OutExec) (InDef, error)  // The mapping function.
+	path NodePath                      // Assigned path for this bound handle instance.
+}
+
+// --- boundExecutionHandle: ExecutionHandle implementation ---
+
+func (b *boundExecutionHandle[InDef, OutDef, OutExec]) zero(OutDef) {}
+func (b *boundExecutionHandle[InDef, OutDef, OutExec]) gafHandle()  {}
+
+func (b *boundExecutionHandle[InDef, OutDef, OutExec]) internal_getPath() NodePath {
+	// For a boundExecutionHandle, its own path is not typically registered or significant.
+	// It acts as a transient instruction. The path of the resulting handle from
+	// def.Start() is what matters in the graph.
+	// If b.path is somehow set (e.g., for very specific debugging or future extensions),
+	// it will be returned; otherwise, it defaults to an empty NodePath.
+	return b.path
+}
+
+func (b *boundExecutionHandle[InDef, OutDef, OutExec]) internal_setPath(p NodePath) {
+	b.path = p
+}
+
+// internal_getDefinition returns the underlying target NodeDefinition that this
+// bound handle will ultimately start after the mapping.
+func (b *boundExecutionHandle[InDef, OutDef, OutExec]) internal_getDefinition() any {
+	return b.def
+}
+
+// internal_getInputSource returns the original exec handle that feeds into the 'fun' mapper.
+// This is the source before the Bind transformation.
+func (b *boundExecutionHandle[InDef, OutDef, OutExec]) internal_getInputSource() any {
+	return b.exec
+}
+
+// internal_out is not intended to be called directly on a boundExecutionHandle
+// to retrieve a final value. boundExecutionHandle represents a deferred computation
+// chain that must be processed by the execution framework. The framework should:
+// 1. Resolve b.exec to get its output (call it `outExecValue`).
+// 2. Compute `inDefValue, err := b.fun(outExecValue)`. Handle error.
+// 3. Create a temporary input handle for `inDefValue`, e.g., `tempInputHandle := Into(inDefValue)`.
+// 4. Call `finalHandle := b.def.Start(tempInputHandle)`.
+// 5. The logical result of this boundExecutionHandle is the result obtained by resolving `finalHandle`.
+// This method returns an error to indicate it's not an 'Into'-style handle.
+func (b *boundExecutionHandle[InDef, OutDef, OutExec]) internal_out() (any, error) {
+	return nil, errors.New("boundExecutionHandle does not provide direct output via internal_out; its resolution is managed by the execution framework by chaining to the underlying definition")
+}
+
+// stepExecution implements the internalExecutionStepper interface for boundExecutionHandle.
+// It performs the core binding logic: resolves the input exec, applies the function, and starts the definition.
+func (b *boundExecutionHandle[InDef, OutDef, OutExec]) stepExecution(execCtx Context) (ExecutionHandle[OutDef], error) {
+	// 1. Resolve b.exec to get outExecValue.
+	//    internalResolve is in the same 'gaf' package.
+	outExecValue, err := internalResolve[OutExec](execCtx, b.exec)
+	if err != nil {
+		inputPath := "unknown_input_handle"
+		if b.exec != nil {
+			inputPath = string(b.exec.internal_getPath())
+		}
+		return nil, fmt.Errorf("error resolving input handle ('%s') for bind operation at '%s': %w", inputPath, b.internal_getPath(), err)
+	}
+
+	// 2. Compute inDefValue using b.fun.
+	inDefValue, err := b.fun(outExecValue) // b.fun is func(OutExec) (InDef, error)
+	if err != nil {
+		inputPath := "unknown_input_handle"
+		if b.exec != nil {
+			inputPath = string(b.exec.internal_getPath())
+		}
+		return nil, fmt.Errorf("error in bind mapping function for bound handle '%s' (after resolving input '%s'): %w", b.internal_getPath(), inputPath, err)
+	}
+
+	// 3. Create a temporary 'Into' handle for inDefValue.
+	tempInputHandle := Into[InDef](inDefValue)
+
+	// 4. Call b.def.Start with the temporary input handle.
+	//    This yields the final ExecutionHandle[OutDef] that should be resolved next.
+	finalHandle := b.def.Start(tempInputHandle)
+
+	return finalHandle, nil
+}
+
+// Bind creates a new ExecutionHandle that represents a stateless mapping operation.
+// It takes an existing handle 'exec', a mapping function 'fun', and a 'def' NodeDefinition.
+// When the returned handle is resolved by the framework:
+// 1. 'exec' is resolved to get its output (OutExec).
+// 2. 'fun' is applied to OutExec to produce InDef.
+// 3. 'def' is started with this InDef value, yielding the final ExecutionHandle[OutDef].
+// The mapping via 'fun' is transient and not persisted.
+func Bind[InDef, OutDef, OutExec any](
+	def NodeDefinition[InDef, OutDef],
+	exec ExecutionHandle[OutExec],
+	fun func(OutExec) (InDef, error),
+) ExecutionHandle[OutDef] {
+	return &boundExecutionHandle[InDef, OutDef, OutExec]{
+		def:  def,
+		exec: exec,
+		fun:  fun,
+		// path will be set by the framework via internal_setPath when this handle
+		// is incorporated into an execution graph.
+	}
+}
+
 // --- Supporting Types ---
 
 // NodeInitializer is an interface implemented by types returned from a

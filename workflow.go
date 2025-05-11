@@ -107,6 +107,18 @@ type NodeIDGetter interface {
 	internal_GetNodeID() NodeID
 }
 
+// internalExecutionStepper defines an interface for handles that manage their
+// own multi-step resolution process. internalResolve will call stepExecution
+// and then recursively resolve the returned handle.
+type internalExecutionStepper[Out any] interface {
+	ExecutionHandle[Out] // Ensures it's a handle and output type matches.
+	// stepExecution performs one logical resolution step and returns the next
+	// ExecutionHandle in the chain, or an error if the step fails.
+	// execCtx is the current execution context, which can be used for resolving
+	// dependencies needed for the step.
+	stepExecution(execCtx Context) (ExecutionHandle[Out], error)
+}
+
 // internalResolve is the core recursive function that drives lazy execution.
 // It takes an execution context and a handle, determines the unique execution path
 // for the handle's instance, interacts with the registry to get/create the
@@ -128,7 +140,23 @@ func internalResolve[Out any](execCtx Context, handle ExecutionHandle[Out]) (Out
 		return zero, errors.New("internalResolve called with nil handle")
 	}
 
-	// --- Direct Handle Resolution ('into' nodes) ---
+	// --- Step 1: Check for self-stepping handles (like Bind) ---
+	// This 'stepper' pattern allows custom multi-stage resolution logic to be encapsulated
+	// within the handle type itself, driven by internalResolve.
+	if stepper, ok := handle.(internalExecutionStepper[Out]); ok {
+		nextHandle, err := stepper.stepExecution(execCtx)
+		if err != nil {
+			// Attempt to get a path for error reporting, though it might be a temporary one.
+			errPath := handle.internal_getPath()
+			return zero, fmt.Errorf("error during execution step for handle '%s': %w", errPath, err)
+		}
+		// Recursively call internalResolve with the new handle returned by the step.
+		// This effectively replaces the current handle with the next one in the chain,
+		// which will then go through the entire internalResolve logic again (stepper, into, standard).
+		return internalResolve[Out](execCtx, nextHandle)
+	}
+
+	// --- Step 2: Direct Handle Resolution ('into' nodes) ---
 	// Attempt to get the output directly. If it works without a specific "not applicable"
 	// error, it's likely an 'into' node or a similar direct source.
 	outAny, outErr := handle.internal_out()
@@ -175,7 +203,7 @@ func internalResolve[Out any](execCtx Context, handle ExecutionHandle[Out]) (Out
 	}
 	// --- End Direct Handle Resolution ---
 
-	// --- Standard Node/Workflow Resolution via Registry ---
+	// --- Step 3: Standard Node/Workflow Resolution via Registry ---
 	def := handle.internal_getDefinition() // Returns the definition object (as 'any').
 	if def == nil {
 		// Safeguard: this should not happen if isNotApplicableError was true.
