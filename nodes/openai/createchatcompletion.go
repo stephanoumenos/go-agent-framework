@@ -5,9 +5,9 @@ import (
 	"context"
 	"errors"
 
-	"go-agent-framework/nodes/openai/clientiface"
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai/clientiface"
 
-	gaf "go-agent-framework"
+	gaf "github.com/stephanoumenos/go-agent-framework"
 
 	openai "github.com/sashabaranov/go-openai"
 )

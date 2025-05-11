@@ -13,10 +13,13 @@ import (
 	"testing"
 	"time"
 
-	gaf "go-agent-framework"
-	"go-agent-framework/mcp"
-	"go-agent-framework/nodes/openai"
-	"go-agent-framework/store"
+	"github.com/stephanoumenos/go-agent-framework/mcp"
+
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai"
+
+	gaf "github.com/stephanoumenos/go-agent-framework"
+
+	"github.com/stephanoumenos/go-agent-framework/store"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpschema "github.com/mark3labs/mcp-go/mcp"

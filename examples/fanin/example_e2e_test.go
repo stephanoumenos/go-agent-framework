@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
-	gaf "go-agent-framework"
-	"go-agent-framework/nodes/openai" // Provides OpenAI nodes used by the workflow.
-	"go-agent-framework/store"        // Provides storage options (MemoryStore used here).
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai" // Provides OpenAI nodes used by the workflow.
+
+	gaf "github.com/stephanoumenos/go-agent-framework"
+
+	"github.com/stephanoumenos/go-agent-framework/store" // Provides storage options (MemoryStore used here).
 
 	// Provides core workflow definitions and execution.
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client.

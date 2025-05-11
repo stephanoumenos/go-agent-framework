@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
-	gaf "go-agent-framework"
-	"go-agent-framework/nodes/openai" // Provides OpenAI node and DI injection.
-	"go-agent-framework/store"        // Provides storage options (MemoryStore used here).
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai" // Provides OpenAI node and DI injection.
+
+	gaf "github.com/stephanoumenos/go-agent-framework"
+
+	"github.com/stephanoumenos/go-agent-framework/store" // Provides storage options (MemoryStore used here).
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client library.
 	"github.com/stretchr/testify/assert"         // For non-fatal assertions.

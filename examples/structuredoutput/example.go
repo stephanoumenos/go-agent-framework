@@ -8,10 +8,13 @@ import (
 	"os"
 	"time"
 
-	gaf "go-agent-framework"                              // Provides core workflow definitions and execution.
-	"go-agent-framework/nodes/openai"                     // Provides the base OpenAI chat completion node.
-	openaimw "go-agent-framework/nodes/openai/middleware" // Provides middleware like WithStructuredOutput.
-	"go-agent-framework/store"                            // Provides storage options for workflow state.
+	openaimw "github.com/stephanoumenos/go-agent-framework/nodes/openai/middleware" // Provides middleware like WithStructuredOutput.
+
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai" // Provides the base OpenAI chat completion node.
+
+	gaf "github.com/stephanoumenos/go-agent-framework" // Provides core workflow definitions and execution.
+
+	"github.com/stephanoumenos/go-agent-framework/store" // Provides storage options for workflow state.
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client library.
 )

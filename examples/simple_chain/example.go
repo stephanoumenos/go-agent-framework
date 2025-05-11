@@ -6,9 +6,9 @@ import (
 	"log"
 	"os"
 
-	gaf "go-agent-framework"
+	gaf "github.com/stephanoumenos/go-agent-framework"
 
-	"go-agent-framework/nodes/openai"
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai"
 
 	goopenai "github.com/sashabaranov/go-openai"
 )

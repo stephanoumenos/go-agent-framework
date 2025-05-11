@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	gaf "go-agent-framework"
+	gaf "github.com/stephanoumenos/go-agent-framework"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"

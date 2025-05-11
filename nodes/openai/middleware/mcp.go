@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"go-agent-framework/nodes/openai/internal"
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai/internal"
 
-	gaf "go-agent-framework"
+	gaf "github.com/stephanoumenos/go-agent-framework"
 
 	openai "github.com/sashabaranov/go-openai"
 	// MCP client interface is implicitly required via DI for internal nodes

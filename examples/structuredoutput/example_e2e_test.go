@@ -6,14 +6,16 @@ package main
 import (
 	"context"
 	"errors"
-	gaf "go-agent-framework"
 	"os"
 	"testing"
 	"time"
 
+	gaf "github.com/stephanoumenos/go-agent-framework"
+
 	// Provides core workflow definitions and execution.
-	"go-agent-framework/nodes/openai" // Provides OpenAI nodes and dependency injection.
-	"go-agent-framework/store"        // Provides storage options.
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai" // Provides OpenAI nodes and dependency injection.
+
+	"github.com/stephanoumenos/go-agent-framework/store" // Provides storage options.
 
 	goopenai "github.com/sashabaranov/go-openai" // OpenAI Go client.
 	"github.com/stretchr/testify/assert"         // For assertions.

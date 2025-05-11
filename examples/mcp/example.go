@@ -12,11 +12,15 @@ import (
 	"strings"
 	"time"
 
-	gaf "go-agent-framework"
-	"go-agent-framework/mcp"                              // Provides the go-agent-framework MCP adapter.
-	"go-agent-framework/nodes/openai"                     // Provides OpenAI nodes and DI functions.
-	openaimw "go-agent-framework/nodes/openai/middleware" // Provides OpenAI middleware like WithMCP.
-	"go-agent-framework/store"                            // Provides workflow state storage options.
+	"github.com/stephanoumenos/go-agent-framework/mcp" // Provides the go-agent-framework MCP adapter.
+
+	openaimw "github.com/stephanoumenos/go-agent-framework/nodes/openai/middleware" // Provides OpenAI middleware like WithMCP.
+
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai" // Provides OpenAI nodes and DI functions.
+
+	gaf "github.com/stephanoumenos/go-agent-framework"
+
+	"github.com/stephanoumenos/go-agent-framework/store" // Provides workflow state storage options.
 
 	// Used to start a local test server for the MCP service.
 

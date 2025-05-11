@@ -1,4 +1,5 @@
-module go-agent-framework
+module github.com/stephanoumenos/go-agent-framework
+
 
 go 1.23.4
 

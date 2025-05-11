@@ -10,8 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	gaf "go-agent-framework"
-	"go-agent-framework/nodes/openai"
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai"
+
+	gaf "github.com/stephanoumenos/go-agent-framework"
 
 	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"

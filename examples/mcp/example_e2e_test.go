@@ -7,14 +7,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	gaf "go-agent-framework"
 	"os"
 	"testing"
 	"time"
 
-	"go-agent-framework/mcp"
-	"go-agent-framework/nodes/openai"
-	"go-agent-framework/store"
+	gaf "github.com/stephanoumenos/go-agent-framework"
+
+	"github.com/stephanoumenos/go-agent-framework/mcp"
+
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai"
+
+	"github.com/stephanoumenos/go-agent-framework/store"
 
 	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go-agent-framework/store"
+	"github.com/stephanoumenos/go-agent-framework/store"
 
 	"github.com/google/uuid"
 )

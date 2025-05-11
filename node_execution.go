@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"go-agent-framework/store"
+	"github.com/stephanoumenos/go-agent-framework/store"
 )
 
 // nodeExecution represents a single, stateful execution instance of an *atomic*

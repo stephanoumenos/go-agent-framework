@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	gaf "go-agent-framework"
+	gaf "github.com/stephanoumenos/go-agent-framework"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"

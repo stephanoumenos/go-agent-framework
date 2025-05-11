@@ -2,10 +2,10 @@
 package openai
 
 import (
-	"go-agent-framework/nodes/openai/clientiface"
-	"go-agent-framework/nodes/openai/internal"
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai/clientiface"
+	"github.com/stephanoumenos/go-agent-framework/nodes/openai/internal"
 
-	gaf "go-agent-framework"
+	gaf "github.com/stephanoumenos/go-agent-framework"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 )
