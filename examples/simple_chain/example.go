@@ -8,23 +8,25 @@ import (
 
 	gaf "go-agent-framework"
 
-	oainode "go-agent-framework/nodes/openai"
+	// oainode "go-agent-framework/nodes/openai"
+	"go-agent-framework/nodes/openai" // Assuming package name is 'openai'
 
-	"github.com/sashabaranov/go-openai"
+	// "github.com/sashabaranov/go-openai"
+	goopenai "github.com/sashabaranov/go-openai"
 )
 
 // storyWorkflowHandler defines the logic for generating and expanding a story idea.
 // It takes a gaf.Context and an initial prompt string, and returns a handle to the final expanded story.
-func storyWorkflowHandler(gctx gaf.Context, initialPrompt string) gaf.ExecutionHandle[openai.ChatCompletionResponse] {
+func storyWorkflowHandler(gctx gaf.Context, initialPrompt string) gaf.ExecutionHandle[goopenai.ChatCompletionResponse] {
 	// NodeDefinition can be created here or passed in if it's shared.
-	chatNodeDef := oainode.CreateChatCompletion("chat_llm")
+	chatNodeDef := openai.CreateChatCompletion("chat_llm") // Assuming package name is 'openai'
 
 	// 1. First LLM Call: Generate a creative story idea
-	initialRequest := openai.ChatCompletionRequest{
-		Model: openai.GPT3Dot5Turbo,
-		Messages: []openai.ChatCompletionMessage{
+	initialRequest := goopenai.ChatCompletionRequest{
+		Model: goopenai.GPT3Dot5Turbo,
+		Messages: []goopenai.ChatCompletionMessage{
 			{
-				Role:    openai.ChatMessageRoleUser,
+				Role:    goopenai.ChatMessageRoleUser,
 				Content: initialPrompt,
 			},
 		},
@@ -33,18 +35,18 @@ func storyWorkflowHandler(gctx gaf.Context, initialPrompt string) gaf.ExecutionH
 	firstCallHandle := chatNodeDef.Start(gaf.Into(initialRequest))
 
 	// 2. Define the mapping function for Bind
-	mapStoryIdeaToExpansionRequest := func(response1 openai.ChatCompletionResponse) (openai.ChatCompletionRequest, error) {
+	mapStoryIdeaToExpansionRequest := func(response1 goopenai.ChatCompletionResponse) (goopenai.ChatCompletionRequest, error) {
 		if len(response1.Choices) == 0 || response1.Choices[0].Message.Content == "" {
-			return openai.ChatCompletionRequest{}, fmt.Errorf("first LLM call returned no content")
+			return goopenai.ChatCompletionRequest{}, fmt.Errorf("first LLM call returned no content")
 		}
 		storyIdea := response1.Choices[0].Message.Content
 		fmt.Printf("LLM Call 1 (Story Idea): %s\n\n", storyIdea)
 
-		expansionRequest := openai.ChatCompletionRequest{
-			Model: openai.GPT3Dot5Turbo,
-			Messages: []openai.ChatCompletionMessage{
+		expansionRequest := goopenai.ChatCompletionRequest{
+			Model: goopenai.GPT3Dot5Turbo,
+			Messages: []goopenai.ChatCompletionMessage{
 				{
-					Role:    openai.ChatMessageRoleUser,
+					Role:    goopenai.ChatMessageRoleUser,
 					Content: fmt.Sprintf("Expand this one-sentence story idea into a short paragraph: \"%s\"", storyIdea),
 				},
 			},
@@ -71,11 +73,13 @@ func main() {
 		fmt.Println("To run this example fully, please set your OPENAI_API_KEY.")
 		os.Exit(0)
 	}
-	client := openai.NewClient(apiKey)
+	// client := openai.NewClient(apiKey)
+	client := goopenai.NewClient(apiKey)
 
 	// Inject the OpenAI client dependency.
 	// This should be done once, before defining nodes that need the client.
-	if err := gaf.Dependencies(oainode.Inject(client)); err != nil {
+	// if err := gaf.Dependencies(oainode.Inject(client)); err != nil {
+	if err := gaf.Dependencies(openai.Inject(client)); err != nil { // Assuming package name is 'openai'
 		log.Fatalf("Error setting up dependencies: %v", err)
 	}
 

@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	gaf "go-agent-framework"
-	oainode "go-agent-framework/nodes/openai" // Assuming this matches the project structure
+	"go-agent-framework/nodes/openai"
 
-	"github.com/sashabaranov/go-openai"
+	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,37 +35,37 @@ func TestStoryWorkflowHandler(t *testing.T) {
 			require.NoError(t, err, "Failed to read request body in mock server")
 			defer r.Body.Close()
 
-			var req openai.ChatCompletionRequest
+			var req goopenai.ChatCompletionRequest
 			err = json.Unmarshal(bodyBytes, &req)
 			require.NoError(t, err, "Failed to unmarshal request body in mock server")
 
 			currentCall := atomic.AddInt32(&callCount, 1)
-			var resp openai.ChatCompletionResponse
+			var resp goopenai.ChatCompletionResponse
 
 			if currentCall == 1 {
 				// First call: Generate story idea
 				expectedPromptContent := "Tell me a short, one-sentence creative story idea."
 				require.Len(t, req.Messages, 1, "Expected 1 message in the first request")
-				assert.Equal(t, openai.ChatMessageRoleUser, req.Messages[0].Role, "Expected user role for the first request's message")
+				assert.Equal(t, goopenai.ChatMessageRoleUser, req.Messages[0].Role, "Expected user role for the first request's message")
 				assert.Equal(t, expectedPromptContent, req.Messages[0].Content, "Unexpected content for the first request's prompt")
 				assert.Equal(t, 50, req.MaxTokens, "Unexpected MaxTokens for the first request")
 
-				resp = openai.ChatCompletionResponse{
-					Choices: []openai.ChatCompletionChoice{
-						{Message: openai.ChatCompletionMessage{Content: expectedStoryIdea}},
+				resp = goopenai.ChatCompletionResponse{
+					Choices: []goopenai.ChatCompletionChoice{
+						{Message: goopenai.ChatCompletionMessage{Content: expectedStoryIdea}},
 					},
 				}
 			} else if currentCall == 2 {
 				// Second call: Expand story idea
 				expectedPromptContent := fmt.Sprintf("Expand this one-sentence story idea into a short paragraph: \"%s\"", expectedStoryIdea)
 				require.Len(t, req.Messages, 1, "Expected 1 message in the second request")
-				assert.Equal(t, openai.ChatMessageRoleUser, req.Messages[0].Role, "Expected user role for the second request's message")
+				assert.Equal(t, goopenai.ChatMessageRoleUser, req.Messages[0].Role, "Expected user role for the second request's message")
 				assert.Equal(t, expectedPromptContent, req.Messages[0].Content, "Unexpected content for the second request's prompt")
 				assert.Equal(t, 150, req.MaxTokens, "Unexpected MaxTokens for the second request")
 
-				resp = openai.ChatCompletionResponse{
-					Choices: []openai.ChatCompletionChoice{
-						{Message: openai.ChatCompletionMessage{Content: expectedExpandedStory}},
+				resp = goopenai.ChatCompletionResponse{
+					Choices: []goopenai.ChatCompletionChoice{
+						{Message: goopenai.ChatCompletionMessage{Content: expectedExpandedStory}},
 					},
 				}
 			} else {
@@ -78,11 +78,11 @@ func TestStoryWorkflowHandler(t *testing.T) {
 		}))
 		defer mockServer.Close()
 
-		config := openai.DefaultConfig("test-api-key")
+		config := goopenai.DefaultConfig("test-api-key")
 		config.BaseURL = mockServer.URL
-		mockClient := openai.NewClientWithConfig(config)
+		mockClient := goopenai.NewClientWithConfig(config)
 
-		err := gaf.Dependencies(oainode.Inject(mockClient))
+		err := gaf.Dependencies(openai.Inject(mockClient))
 		require.NoError(t, err, "Error setting up GAF dependencies with mock client")
 
 		workflowInput := "Tell me a short, one-sentence creative story idea."
@@ -101,8 +101,8 @@ func TestStoryWorkflowHandler(t *testing.T) {
 	t.Run("FirstCallNoContent", func(t *testing.T) {
 		gaf.ResetDependencies()
 		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			resp := openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{},
+			resp := goopenai.ChatCompletionResponse{
+				Choices: []goopenai.ChatCompletionChoice{},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			err := json.NewEncoder(w).Encode(resp)
@@ -110,11 +110,11 @@ func TestStoryWorkflowHandler(t *testing.T) {
 		}))
 		defer mockServer.Close()
 
-		config := openai.DefaultConfig("test-api-key")
+		config := goopenai.DefaultConfig("test-api-key")
 		config.BaseURL = mockServer.URL
-		mockClient := openai.NewClientWithConfig(config)
+		mockClient := goopenai.NewClientWithConfig(config)
 
-		err := gaf.Dependencies(oainode.Inject(mockClient))
+		err := gaf.Dependencies(openai.Inject(mockClient))
 		require.NoError(t, err, "Error setting up GAF dependencies with mock client for error test")
 
 		workflowInput := "Tell me a short, one-sentence creative story idea."
@@ -129,9 +129,9 @@ func TestStoryWorkflowHandler(t *testing.T) {
 	t.Run("FirstCallEmptyMessageContent", func(t *testing.T) {
 		gaf.ResetDependencies()
 		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			resp := openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{Message: openai.ChatCompletionMessage{Content: ""}},
+			resp := goopenai.ChatCompletionResponse{
+				Choices: []goopenai.ChatCompletionChoice{
+					{Message: goopenai.ChatCompletionMessage{Content: ""}},
 				},
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -140,11 +140,11 @@ func TestStoryWorkflowHandler(t *testing.T) {
 		}))
 		defer mockServer.Close()
 
-		config := openai.DefaultConfig("test-api-key")
+		config := goopenai.DefaultConfig("test-api-key")
 		config.BaseURL = mockServer.URL
-		mockClient := openai.NewClientWithConfig(config)
+		mockClient := goopenai.NewClientWithConfig(config)
 
-		err := gaf.Dependencies(oainode.Inject(mockClient))
+		err := gaf.Dependencies(openai.Inject(mockClient))
 		require.NoError(t, err, "Error setting up GAF dependencies with mock client for empty content test")
 
 		workflowInput := "Tell me a short, one-sentence creative story idea."

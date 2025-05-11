@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	gaf "go-agent-framework"
-	oainode "go-agent-framework/nodes/openai"
+	"go-agent-framework/nodes/openai"
 
-	"github.com/sashabaranov/go-openai"
+	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,10 +30,10 @@ func TestStoryWorkflowHandler_E2E(t *testing.T) {
 	gaf.ResetDependencies()
 
 	// 1. Setup OpenAI Client
-	client := openai.NewClient(apiKey)
+	client := goopenai.NewClient(apiKey)
 
 	// Inject the real OpenAI client dependency.
-	err := gaf.Dependencies(oainode.Inject(client))
+	err := gaf.Dependencies(openai.Inject(client))
 	require.NoError(t, err, "Error setting up GAF dependencies with real OpenAI client")
 
 	// Define the input for this specific workflow run.
