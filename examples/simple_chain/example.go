@@ -16,7 +16,7 @@ import (
 // storyWorkflowHandler defines the logic for generating and expanding a story idea.
 // It takes a gaf.Context and an initial prompt string, and returns a handle to the final expanded story.
 func storyWorkflowHandler(gctx gaf.Context, initialPrompt string) gaf.ExecutionHandle[goopenai.ChatCompletionResponse] {
-	chatNodeDef := openai.CreateChatCompletion("chat_llm")
+	ideaNodeDef := openai.CreateChatCompletion("idea")
 
 	// 1. First LLM Call: Generate a creative story idea
 	initialRequest := goopenai.ChatCompletionRequest{
@@ -29,7 +29,7 @@ func storyWorkflowHandler(gctx gaf.Context, initialPrompt string) gaf.ExecutionH
 		},
 		MaxTokens: 50,
 	}
-	firstCallHandle := chatNodeDef.Start(gaf.Into(initialRequest))
+	firstCallHandle := ideaNodeDef.Start(gaf.Into(initialRequest))
 
 	// 2. Define the mapping function for Bind
 	mapStoryIdeaToExpansionRequest := func(response1 goopenai.ChatCompletionResponse) (goopenai.ChatCompletionRequest, error) {
@@ -53,7 +53,8 @@ func storyWorkflowHandler(gctx gaf.Context, initialPrompt string) gaf.ExecutionH
 	}
 
 	// 3. Use Bind to chain the second LLM call
-	secondCallHandle := gaf.Bind(chatNodeDef, firstCallHandle, mapStoryIdeaToExpansionRequest)
+	expandNodeDef := openai.CreateChatCompletion("story")
+	secondCallHandle := gaf.Bind(expandNodeDef, firstCallHandle, mapStoryIdeaToExpansionRequest)
 	return secondCallHandle
 }
 
