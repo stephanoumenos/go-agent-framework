@@ -91,22 +91,6 @@ go get github.com/stephanoumenos/go-agent-framework
 
 _(Note: You'll typically import the root package `github.com/stephanoumenos/go-agent-framework` aliased as `gaf`, and specific sub-packages like `.../nodes/openai`, `.../store`, etc. as needed.)_
 
-## Concepts
-
-- **`NodeDefinition[In, Out]`**: A reusable, immutable blueprint for a unit of work. Created via `gaf.DefineNode` or `gaf.WorkflowFromFunc`.
-- **`WorkflowDefinition[In, Out]`**: Same as `NodeDefinition[In, Out]`, but can be a graph and the entry point for an execution. Created via `gaf.WorkflowFromFunc`.
-- **`NodeResolver[In, Out]`**: Implements the core logic (`Get`) and initialization (`Init`) for an _atomic_ node.
-- **`NodeInitializer`**: Returned by `Init()`. Provides a `NodeTypeID` used for matching dependencies. Can implement `DependencyInjectable[Dep]`.
-- **`ExecutionHandle[Out]`**: A lightweight handle representing a future result of type `Out`. Obtained by calling `Start()` on a `NodeDefinition`.
-- **`gaf.Execute`**: Triggers execution of a graph defined by a root `ExecutionHandle`.
-- **`gaf.ExecuteWorkflow`**: Triggers execution of a `WorkflowDefinition` with a direct input value.
-- **`gaf.Context`**: Passed to `WorkflowHandlerFunc` and `NewNode` functions. Provides access to workflow scope, Go `context.Context`, and `store.Store`.
-- **`gaf.NewNode`**: Allows defining anonymous, inline workflow steps (subgraphs) within a `WorkflowHandlerFunc`.
-- **`gaf.FanIn`**: Used within `gaf.NewNode` to concurrently await results from multiple `ExecutionHandle`s.
-- **`Future[T]`**: Returned by `FanIn`. Represents the eventual result of a dependency. Use `future.Get()` to retrieve the value.
-- **Dependency Injection**: Nodes declare dependencies via `DependencyInjectable[Dep]`. Dependencies are registered globally via `gaf.Dependencies(...)`.
-- **`store.Store`**: Interface for persisting workflow state. Implementations (`MemoryStore`, `FileStore`) passed via `gaf.WithStore(...)`.
-
 ## Features
 
 ### Structured Output with OpenAI
@@ -143,3 +127,18 @@ See the `./examples` directory for more detailed usage patterns.
 - **Explicitness:** Make dependencies and workflow structure clear and traceable.
 - **Testability:** Design components to be easily unit-tested and integrated.
 - **Code Sharing:** Promote the creation of reusable nodes and workflows that can be imported and shared across different agent implementations.
+
+## Concepts
+
+- **`NodeDefinition[In, Out]`**: A reusable, immutable blueprint for a unit of work. Created via `gaf.DefineNode` or `gaf.WorkflowFromFunc`.
+- **`WorkflowDefinition[In, Out]`**: Same as `NodeDefinition[In, Out]`, but can be a graph and the entry point for an execution. Created via `gaf.WorkflowFromFunc`.
+- **`NodeResolver[In, Out]`**: Implements the core logic (`Get`) and initialization (`Init`) for an _atomic_ node.
+- **`NodeInitializer`**: Returned by `Init()`. Provides a `NodeTypeID` used for matching dependencies. Can implement `DependencyInjectable[Dep]`.
+- **`ExecutionHandle[Out]`**: A lightweight handle representing a future result of type `Out`. Obtained by calling `Start()` on a `NodeDefinition`.
+- **`gaf.ExecuteWorkflow`**: Triggers execution of a `WorkflowDefinition` with a direct input value.
+- **`gaf.Context`**: Passed to `WorkflowHandlerFunc` and `NewNode` functions. Provides access to workflow scope, Go `context.Context`, and `store.Store`.
+- **`gaf.NewNode`**: Allows defining anonymous, inline workflow steps (subgraphs) within a `WorkflowHandlerFunc`.
+- **`gaf.FanIn`**: Used within `gaf.NewNode` to concurrently await results from multiple `ExecutionHandle`s.
+- **`Future[T]`**: Returned by `FanIn`. Represents the eventual result of a dependency. Use `future.Get()` to retrieve the value.
+- **Dependency Injection**: Nodes declare dependencies via `DependencyInjectable[Dep]`. Dependencies are registered globally via `gaf.Dependencies(...)`.
+- **`store.Store`**: Interface for persisting workflow state. Implementations (`MemoryStore`, `FileStore`) passed via `gaf.WithStore(...)`.
